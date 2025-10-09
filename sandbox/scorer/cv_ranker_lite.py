@@ -1,16 +1,35 @@
 #!/usr/bin/env python3
-import argparse, os, re, math, subprocess, tempfile, statistics, time, sys
+"""
+CV ↔ Job scoring (fast path):
+- PDF-friendly text extraction (optional quick extractor)
+- Keyword coverage (exact + fuzzy fallback)
+- Embedding similarity (job vs whole CV)
+- Evidence rerank on TOP-N lines only (big speed win)
+- Batching + device auto-pick (cpu/cuda)
+
+Usage (same as before):
+  python cv_ranker_fast.py \
+    --pdf sandbox/scorer/cv_Abigail_Brown.pdf \
+    --job sandbox/scorer/job.txt \
+    --keywords "POS,sales,EFTPOS,brand" \
+    --speed fast
+
+Extra options:
+  --quick-extract   # faster but less layout-aware PDF text
+  --no-ocr          # skip OCR fallback
+  --batch 64        # override default batch size
+  --device cpu|cuda|auto
+"""
+
+import argparse, os, re, math, subprocess, tempfile, statistics, sys
 from typing import List, Tuple
 import numpy as np
-
-# -------- tiny logger --------
-def log(*a): print("[cv_ranker]", *a, flush=True)
 
 # PDF
 import fitz  # PyMuPDF
 
 # NLP
-from FlagEmbedding import FlagModel, FlagReranker
+from FlagEmbedding import FlagModel, FlagReranker  # bge-m3 + bge-reranker-v2-m3
 from rapidfuzz import fuzz
 
 # Optional device auto-detect
@@ -20,24 +39,46 @@ try:
 except Exception:
     _HAS_TORCH = False
 
-# =========================
-#        PDF extract
-# =========================
-def extract_text_fast(pdf_path: str) -> str:
-    """Fast plain text extraction (no layout heuristics)."""
-    doc = fitz.open(pdf_path)
-    chunks = []
-    for p in doc:
-        chunks.append(p.get_text("text"))
-    doc.close()
-    return "\n".join(chunks)
+# ---------------------------
+# Config: speed presets
+# ---------------------------
+SPEED_PRESETS = {
+    # name: dict of caps/batches
+    "fast":      {"max_segments": 900,  "topN_for_rerank": 140, "emb_batch": 96,  "rerank_batch": 64},
+    "balanced":  {"max_segments": 1600, "topN_for_rerank": 240, "emb_batch": 64,  "rerank_batch": 48},
+    "max":       {"max_segments": 3000, "topN_for_rerank": 400, "emb_batch": 48,  "rerank_batch": 32},
+}
+
+# ---------------------------
+# PDF → structured text (with OCR fallback)
+# ---------------------------
+def ocr_if_needed(pdf_path: str, allow_ocr: bool) -> str:
+    """If the PDF has little/no extractable text, try OCRmyPDF to add a text layer and return new path."""
+    try:
+        txt = extract_text_structured(pdf_path)
+        if len(txt.strip()) > 400:  # heuristic: already has text
+            return pdf_path
+    except Exception:
+        pass
+    if not allow_ocr:
+        return pdf_path
+    out_pdf = os.path.join(tempfile.gettempdir(), f"ocr_{os.path.basename(pdf_path)}")
+    try:
+        subprocess.run(
+            ["ocrmypdf", "--skip-text", "--fast-web-view", "1", pdf_path, out_pdf],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        return out_pdf
+    except Exception:
+        return pdf_path  # fall back; caller will warn if text is tiny
 
 def _remove_headers_footers(pages_text: List[str]) -> List[str]:
+    """Remove lines likely to be headers/footers by finding lines repeated across pages."""
     counts = {}
     for t in pages_text:
         for ln in [x.strip() for x in t.splitlines() if x.strip()]:
-            counts[ln] = counts.get(ln, 0) + 1
-    thresh = max(2, int(0.6 * len(pages_text)))
+            counts[ln] = counts[ln] + 1 if ln in counts else 1
+    thresh = max(2, int(0.6 * len(pages_text)))  # lines on ≥60% pages
     repeated = {ln for ln, c in counts.items() if c >= thresh and len(ln) <= 80}
     cleaned = []
     for t in pages_text:
@@ -46,72 +87,84 @@ def _remove_headers_footers(pages_text: List[str]) -> List[str]:
     return cleaned
 
 def extract_text_structured(pdf_path: str) -> str:
-    """Layout-aware (slower, higher quality) extraction."""
+    """
+    Layout-aware PDF extraction with simple heading/bullet preservation.
+    Uses PyMuPDF dict to access spans and sizes; joins blocks in reading order.
+    """
     doc = fitz.open(pdf_path)
     page_texts = []
     for page in doc:
         pd = page.get_text("dict")
         lines_out, sizes = [], []
+
+        # collect sizes (once)
         for b in pd.get("blocks", []):
             for l in b.get("lines", []):
                 for s in l.get("spans", []):
-                    if s.get("size"): sizes.append(s["size"])
-        med = statistics.median(sizes) if sizes else 0
+                    sz = s.get("size")
+                    if sz: sizes.append(sz)
+        med_size = statistics.median(sizes) if sizes else 0.0
+
         for b in pd.get("blocks", []):
             block_lines, block_sizes = [], []
             for l in b.get("lines", []):
                 for s in l.get("spans", []):
                     txt = (s.get("text") or "").strip()
-                    if txt: 
-                        block_lines.append(txt)
-                        if s.get("size"): block_sizes.append(s["size"])
-            if not block_lines: 
+                    if not txt:
+                        continue
+                    block_sizes.append(s.get("size", 0))
+                    block_lines.append(txt)
+            if not block_lines:
                 continue
+
             is_heading = False
-            if block_sizes and med:
-                big = sum(1 for sz in block_sizes if sz > 1.2 * med)
+            if block_sizes and med_size:
+                big = sum(sz > 1.2 * med_size for sz in block_sizes)
                 is_heading = big >= max(1, int(0.6 * len(block_sizes)))
-            text_block = "\n".join(block_lines)
-            lines_out += (["", text_block.upper(), ""] if is_heading else [text_block])
+
+            text_block = " ".join(block_lines)
+            if is_heading:
+                lines_out += ["", text_block.upper(), ""]
+            else:
+                lines_out.append(text_block)
+
         page_texts.append("\n".join(lines_out))
     doc.close()
+
+    # Remove repeated headers/footers
     page_texts = _remove_headers_footers(page_texts)
     return "\n\n".join(page_texts)
 
-def ocr_if_needed(pdf_path: str, extractor) -> str:
-    """Run extractor; if text tiny, try OCRmyPDF and return new path, else original."""
-    try:
-        txt = extractor(pdf_path)
-        if len(txt.strip()) > 400:
-            return pdf_path
-    except Exception:
-        pass
-    out_pdf = os.path.join(tempfile.gettempdir(), f"ocr_{os.path.basename(pdf_path)}")
-    try:
-        log("Running OCRmyPDF …")
-        subprocess.run(
-            ["ocrmypdf", "--skip-text", "--fast-web-view", "1", pdf_path, out_pdf],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        return out_pdf
-    except Exception:
-        log("OCR not available or failed; using original PDF")
-        return pdf_path
+def extract_text_quick(pdf_path: str) -> str:
+    """Faster, simpler extraction (no layout heuristics)."""
+    doc = fitz.open(pdf_path)
+    out = []
+    for page in doc:
+        out.append(page.get_text("text"))
+    doc.close()
+    return "\n\n".join(out)
 
-def load_text_auto(path_or_text: str, extractor) -> str:
+def load_text_auto(path_or_text: str, quick_extract: bool, allow_ocr: bool) -> str:
+    """
+    If it's a path:
+      - .pdf → extract (quick or structured; with optional OCR fallback)
+      - other → read as text
+    Else: treat as literal text.
+    """
     if os.path.exists(path_or_text):
         if path_or_text.lower().endswith(".pdf"):
-            use = ocr_if_needed(path_or_text, extractor)
-            return extractor(use)
+            use_path = ocr_if_needed(path_or_text, allow_ocr=allow_ocr)
+            txt = extract_text_quick(use_path) if quick_extract else extract_text_structured(use_path)
+            return txt
         with open(path_or_text, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
-    return path_or_text
+    return path_or_text  # raw text
 
-# =========================
-#   scoring utilities
-# =========================
+# ---------------------------
+# Normalization & keyword matching
+# ---------------------------
 def normalize_text(s: str) -> str:
-    s = s.replace("\u00A0", " ")
+    s = s.replace("\u00A0", " ")  # nbsp
     s = re.sub(r"[^\w\s\-\+./]", " ", s)
     s = re.sub(r"\s+", " ", s).strip().lower()
     return s
@@ -124,74 +177,111 @@ def keyword_coverage(cv_text: str, keywords: List[str]) -> Tuple[float, List[str
     for kw in keywords:
         kw_norm = normalize_text(kw)
         if re.search(rf"\b{re.escape(kw_norm)}\b", cv_norm):
-            found.append(kw); continue
+            found.append(kw)
+            continue
+        # fuzzy fallback (rarely hit due to exact phrase first)
         if fuzz.partial_ratio(kw_norm, cv_norm) >= 90:
             found.append(kw)
     return (len(found) / len(keywords)), found
+
+# ---------------------------
+# Embeddings + similarity (vectorized)
+# ---------------------------
+def l2_normalize(mat: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9
+    return mat / norms
 
 def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     a = a / (np.linalg.norm(a) + 1e-9)
     b = b / (np.linalg.norm(b) + 1e-9)
     return float(np.dot(a, b))
 
-def _pick_device(arg_device: str) -> str:
-    if arg_device and arg_device.lower() != "auto":
-        return arg_device
-    if _HAS_TORCH:
-        if torch.cuda.is_available(): return "cuda"
-        try:
-            if torch.backends.mps.is_available(): return "mps"  # Apple Silicon
-        except Exception:
-            pass
-    return "cpu"
+# ---------------------------
+# Segmentation
+# ---------------------------
+def segment_cv(cv_text: str, max_segments: int) -> List[str]:
+    """
+    Split into bullet-ish lines first, then sentences; keep medium-length lines.
+    Cap total to avoid explosion.
+    """
+    candidates = re.split(r"(?:\n+|[•\-–]\s+)", cv_text)
+    segs = []
+    for c in candidates:
+        c = c.strip()
+        segs.extend([x.strip() for x in re.split(r"[.\n]", c) if x.strip()])
+    # Keep informative lengths
+    segs = [ln for ln in segs if 20 <= len(ln) <= 220]
+    if len(segs) > max_segments:
+        segs = segs[:max_segments]
+    return segs
 
-# =========================
-#      main scorer
-# =========================
-def score_cv_against_job(cv_text: str, job_text: str, keywords: List[str],
-                         embedder: FlagModel, reranker: "FlagReranker|None",
-                         topk_evidence: int = 5, max_pairs: int = 300) -> dict:
-    # 1) Keywords
+# ---------------------------
+# Main scoring (fast path)
+# ---------------------------
+def score_cv_against_job_fast(
+    cv_text: str,
+    job_text: str,
+    keywords: List[str],
+    embedder: FlagModel,
+    reranker: FlagReranker,
+    max_segments: int,
+    topN_for_rerank: int,
+    emb_batch: int,
+    rerank_batch: int,
+) -> dict:
+    # 1) keyword coverage (cheap)
     cov, matched = keyword_coverage(cv_text, keywords)
     cov_pct = 100.0 * cov
 
-    # 2) Embedding similarity (doc-level)
-    embs = embedder.encode([job_text, cv_text])
-    sim = cosine_sim(embs[0], embs[1])
+    # 2) embedding similarity (whole doc vs job)
+    #    Keep separate from segment-level encoding to avoid unnecessary concat cost.
+    if _HAS_TORCH:
+        with torch.inference_mode():
+            embs = embedder.encode([job_text, cv_text], batch_size=2)
+    else:
+        embs = embedder.encode([job_text, cv_text], batch_size=2)
+    job_vec, cv_vec = np.array(embs[0]), np.array(embs[1])
+    sim = cosine_sim(job_vec, cv_vec)
     sim_pct = 100.0 * ((sim + 1.0) / 2.0)
 
-    # 3) Evidence:
-    # Build candidate lines; prefilter with vector sim vs JD to keep only top-N
-    pieces = re.split(r"(?:\n+|[•\-–]\s+)", cv_text)
-    segs = []
-    for c in pieces:
-        c = c.strip()
-        segs.extend([x.strip() for x in re.split(r"[.\n]", c) if x.strip()])
-    lines = [ln for ln in segs if 20 <= len(ln) <= 220]
-    if not lines:
-        rerank_pct = 0.0
-    else:
-        # vector prefilter (very fast)
-        jd = embedder.encode([job_text])[0]
-        line_vecs = embedder.encode(lines, batch_size=128)
-        sims = np.asarray([cosine_sim(jd, v) for v in line_vecs])
-        top_idx = np.argsort(-sims)[:max_pairs]
-        top_lines = [lines[i] for i in top_idx]
-
-        if reranker is None:
-            # FAST PATH: use mean of top-k sims as proxy for evidence
-            k = min(topk_evidence, len(top_idx))
-            topk = sims[top_idx][:k]
-            rerank_pct = 100.0 * float(np.clip((topk.mean() + 1.0) / 2.0, 0.0, 1.0))
+    # 3) Reranker evidence on TOP-N segments only
+    segments = segment_cv(cv_text, max_segments=max_segments)
+    rerank_pct = 0.0
+    if segments:
+        # Embed segments once (batched), cosine vs job, pick topN
+        if _HAS_TORCH:
+            with torch.inference_mode():
+                seg_embs = embedder.encode(segments, batch_size=emb_batch)
         else:
-            pairs = [[job_text, ln] for ln in top_lines]
-            logits = reranker.compute_score(pairs, normalize=False)
-            scores01 = [1.0 / (1.0 + math.exp(-x)) for x in logits]
-            k = min(topk_evidence, len(scores01))
-            rerank_pct = 100.0 * (sum(sorted(scores01, reverse=True)[:k]) / k)
+            seg_embs = embedder.encode(segments, batch_size=emb_batch)
+        seg_embs = np.array(seg_embs)
+        job_norm = job_vec / (np.linalg.norm(job_vec) + 1e-9)
+        seg_norm = l2_normalize(seg_embs)
+        sims = seg_norm @ job_norm  # vectorized cosine
 
-    # Blend (bias to keywords for hiring)
-    final = 0.55 * cov_pct + 0.30 * sim_pct + 0.15 * rerank_pct
+        # Get topN_for_rerank indices
+        if len(segments) > topN_for_rerank:
+            top_idx = np.argpartition(sims, -topN_for_rerank)[-topN_for_rerank:]
+            # sort those by score descending for nicer logging
+            top_idx = top_idx[np.argsort(sims[top_idx])[::-1]]
+        else:
+            # all
+            top_idx = np.argsort(sims)[::-1]
+
+        top_segments = [segments[i] for i in top_idx]
+        pairs = [[job_text, ln] for ln in top_segments]
+
+        # Rerank in one go (batched), then take top-k average as "evidence strength"
+        if pairs:
+            logits = reranker.compute_score(pairs, normalize=False, batch_size=rerank_batch)
+            scores01 = [1.0 / (1.0 + math.exp(-x)) for x in logits]
+            # use the best ~K (sqrt) to be a bit more stable on long CVs
+            k = max(1, int(max(5, math.sqrt(len(scores01)))))
+            topk = sorted(scores01, reverse=True)[:k]
+            rerank_pct = 100.0 * (sum(topk) / len(topk))
+
+    # 4) Blend
+    final = 0.50 * cov_pct + 0.30 * sim_pct + 0.20 * rerank_pct
     return {
         "final_score": round(final, 2),
         "keyword_coverage_pct": round(cov_pct, 1),
@@ -200,73 +290,75 @@ def score_cv_against_job(cv_text: str, job_text: str, keywords: List[str],
         "matched_keywords": matched[:50],
     }
 
+def _pick_device(arg_device: str) -> str:
+    if arg_device and arg_device.lower() != "auto":
+        return arg_device
+    if _HAS_TORCH and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
 def main():
-    ap = argparse.ArgumentParser(description="Fast CV ↔ Job scoring")
-    ap.add_argument("--pdf", required=True, help="CV PDF")
-    ap.add_argument("--job", required=True, help="JD .txt/.pdf or raw string")
-    ap.add_argument("--keywords", default="", help="Comma-separated skills")
-    ap.add_argument("--device", default="auto", help="auto/cpu/cuda/mps")
-    ap.add_argument("--speed", default="balanced",
-                    choices=["fast", "balanced", "quality"],
-                    help="Model size + extraction strategy")
-    ap.add_argument("--max_pairs", type=int, default=300, help="Max segments for evidence stage")
+    ap = argparse.ArgumentParser(description="CV ↔ Job keyword/semantic scoring (fast).")
+    ap.add_argument("--pdf", required=True, help="Path to applicant CV PDF (input is a .pdf)")
+    ap.add_argument("--job", required=True,
+                    help="Path to job description .txt/.pdf OR literal raw text")
+    ap.add_argument("--keywords", default="",
+                    help="Comma-separated keywords (e.g., 'python,fastapi,react,aws')")
+    ap.add_argument("--device", default="auto", help="auto/cpu/cuda")
+    ap.add_argument("--speed", default="fast", choices=list(SPEED_PRESETS.keys()),
+                    help="Tune number of segments and batches")
+    ap.add_argument("--quick-extract", action="store_true",
+                    help="Faster PDF text extraction (less structure fidelity)")
+    ap.add_argument("--no-ocr", action="store_true",
+                    help="Disable OCR fallback (faster if you know PDF has text)")
+    ap.add_argument("--batch", type=int, default=None,
+                    help="Override embedding batch size for segments")
     args = ap.parse_args()
 
-    # Pick models + extractor by speed
-    if args.speed == "fast":
-        embedder_name = "BAAI/bge-small-en-v1.5"
-        reranker_name = None
-        extractor = extract_text_fast
-    elif args.speed == "quality":
-        embedder_name = "BAAI/bge-m3"
-        reranker_name = "BAAI/bge-reranker-v2-m3"
-        extractor = extract_text_structured
-    else:  # balanced
-        embedder_name = "BAAI/bge-base-en-v1.5"
-        reranker_name = "BAAI/bge-reranker-base"
-        extractor = extract_text_fast
+    if len(sys.argv) == 1:
+        ap.print_help()
+        sys.exit(1)
 
-    # Device + small perf env tweaks
     device = _pick_device(args.device)
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    if _HAS_TORCH and device == "cpu":
-        try:
-            torch.set_num_threads(max(1, (os.cpu_count() or 4) - 1))
-        except Exception:
-            pass
+    preset = SPEED_PRESETS[args.speed].copy()
+    if args.batch:
+        preset["emb_batch"] = args.batch  # user override
 
-    # Load texts
-    cv_pdf_path = ocr_if_needed(args.pdf, extractor)
-    cv_text = extractor(cv_pdf_path)
-    job_text = load_text_auto(args.job, extractor)
-
+    # ----- Load text from PDFs or raw text -----
+    cv_text = load_text_auto(args.pdf, quick_extract=args.quick_extract, allow_ocr=not args.no_ocr)
     if len(cv_text.strip()) < 200:
-        log("warn: very little text from CV (is it a scan without OCR?)")
+        print("[warn] Very little text extracted from CV. Is this scanned without OCR?")
+
+    job_text = load_text_auto(args.job, quick_extract=args.quick_extract, allow_ocr=False)
     if len(job_text.strip()) < 50:
-        log("warn: JD text looks very short")
+        print("[warn] Job description text seems very short. Check the --job input.")
 
     kw_list = [k.strip() for k in args.keywords.split(",") if k.strip()]
     job_profile = job_text + ("\nRequired skills: " + ", ".join(kw_list) if kw_list else "")
 
-    # Models
-    log(f"Device: {device} | Speed: {args.speed}")
-    log(f"Embedder: {embedder_name}")
-    embedder = FlagModel(embedder_name, use_fp16=(device != "cpu"), device=device)
-    reranker = None
-    if reranker_name:
-        log(f"Reranker: {reranker_name}")
-        reranker = FlagReranker(reranker_name, use_fp16=(device != "cpu"), device=device)
+    # ----- Models -----
+    # Note: bge-m3 is strong; if you want even faster, consider "BAAI/bge-small-en-v1.5".
+    embedder = FlagModel("BAAI/bge-m3", use_fp16=True, device=device)
+    reranker = FlagReranker("BAAI/bge-reranker-v2-m3", use_fp16=True, device=device)
 
-    # Score
-    t0 = time.perf_counter()
-    result = score_cv_against_job(cv_text, job_profile, kw_list, embedder, reranker,
-                                  topk_evidence=5, max_pairs=args.max_pairs)
-    took = time.perf_counter() - t0
+    # ----- Score (fast path with pre-filter) -----
+    if _HAS_TORCH:
+        torch.set_grad_enabled(False)
+    result = score_cv_against_job_fast(
+        cv_text=cv_text,
+        job_text=job_profile,
+        keywords=kw_list,
+        embedder=embedder,
+        reranker=reranker,
+        max_segments=preset["max_segments"],
+        topN_for_rerank=preset["topN_for_rerank"],
+        emb_batch=preset["emb_batch"],
+        rerank_batch=preset["rerank_batch"],
+    )
 
     print("\n=== CV ↔ JOB SCORE ===")
     for k, v in result.items():
         print(f"{k}: {v}")
-    log(f"Done in {took:.2f}s")
 
 if __name__ == "__main__":
     main()

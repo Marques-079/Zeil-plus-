@@ -4,7 +4,7 @@ from pathlib import Path
 # caller.py lives in .../Zeil-plus-/sandbox/scorer/caller.py
 HERE   = Path(__file__).resolve().parent      # .../sandbox/scorer
 RUNNER = HERE / "cv_ranker.py"
-PDF    = HERE / "Marcus ChanCV.pdf"
+PDF    = HERE / "cv_Abigail Brown.pdf"
 JOB    = HERE / "job.txt"
 
 for p in (RUNNER, PDF, JOB):
