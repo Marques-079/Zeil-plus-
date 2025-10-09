@@ -22,8 +22,7 @@ export default function Home() {
 
         {/* Subtitle */}
         <p className="text-lg sm:text-xl text-white/90 leading-relaxed">
-          Upload your CV and let AI help you stand out. Get instant feedback, 
-          tailored insights, and boost your hiring chances — powered by ZEIL.
+        Upload your CV and let AI help you stand out. Every application gets the spotlight it deserves. — powered by ZEIL.
         </p>
 
         {/* Upload Section */}
