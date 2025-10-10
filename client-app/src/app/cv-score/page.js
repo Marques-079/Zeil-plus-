@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import useSWR from "swr";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -9,39 +10,36 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ArrowUpDown } from "lucide-react";
 
+const fetcher = (url) => fetch(url).then((r) => r.json());
+
 export default function Dashboard() {
-  const totalCVs = 124;          // keep your other placeholders if you want
-  const averageScore = 78;
+  // LIVE DATA
+  const { data, error, isLoading } = useSWR("/api/scores", fetcher, {
+    refreshInterval: 3000,
+  }); // poll every 3s
 
-  // NEW: topScores comes from API
-  const [topScores, setTopScores] = useState([]);
+  const totalCVs = data?.totalCVs ?? 0;
+  const averageScore = data?.averageScore ?? 0;
+  const topScores = data?.top5 ?? [];
 
-  useEffect(() => {
-    (async () => {
-      const res = await fetch("/api/scores", { cache: "no-store" });
-      const data = await res.json();
-      setTopScores(data.topScores ?? []);
-    })();
-  }, []);
-
-  // Placeholder dataset of uploaded CVs
-  const allCVs = Array.from({ length: 98 }, (_, i) => ({
-    name: `Candidate ${String.fromCharCode(65 + (i % 26))}${i}`,
-    score: Math.floor(Math.random() * 41) + 60, // 60–100
-    date: new Date(2025, 9, 5 + (i % 25)),
-  }));
+  // Fallback list (empty until data arrives)
+  const items =
+    (data?.items ?? []).map((i) => ({
+      ...i,
+      date: new Date(i.date),
+    })) ?? [];
 
   // Search, sorting, pagination
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [sortBy, setSortBy] = useState(null);
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortBy, setSortBy] = useState(null); // "score" | "date" | null
+  const [sortDir, setSortDir] = useState("desc"); // "asc" | "desc"
 
   const itemsPerPage = 25;
 
   const filteredCVs = useMemo(() => {
-    let result = [...allCVs].filter((cv) =>
-      cv.name.toLowerCase().includes(search.toLowerCase())
+    let result = items.filter((cv) =>
+      (cv.name || "").toLowerCase().includes(search.toLowerCase())
     );
 
     if (sortBy) {
@@ -50,27 +48,25 @@ export default function Dashboard() {
           return sortDir === "asc" ? a.score - b.score : b.score - a.score;
         }
         if (sortBy === "date") {
-          return sortDir === "asc"
-            ? a.date.getTime() - b.date.getTime()
-            : b.date.getTime() - a.date.getTime();
+          const da = new Date(a.date).getTime();
+          const db = new Date(b.date).getTime();
+          return sortDir === "asc" ? da - db : db - da;
         }
         return 0;
       });
     } else {
-      // Default alphabetical sort
-      result.sort((a, b) => a.name.localeCompare(b.name));
+      result.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     }
 
     return result;
-  }, [allCVs, search, sortBy, sortDir]);
+  }, [items, search, sortBy, sortDir]);
 
-  const totalPages = Math.ceil(filteredCVs.length / itemsPerPage);
+  const totalPages = Math.ceil(filteredCVs.length / itemsPerPage) || 1;
   const currentItems = filteredCVs.slice(
     (page - 1) * itemsPerPage,
     page * itemsPerPage
   );
 
-  // Animation variants
   const fadeUp = {
     hidden: { opacity: 0, y: 30 },
     visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
@@ -92,6 +88,8 @@ export default function Dashboard() {
           <p className="text-white/80 mt-2">
             Real-time insights into CV performance and engagement
           </p>
+          {error && <p className="text-rose-300 mt-2">Failed to load scores.</p>}
+          {isLoading && <p className="text-white/60 mt-2">Loading…</p>}
         </motion.header>
 
         {/* Stats Cards */}
@@ -133,7 +131,7 @@ export default function Dashboard() {
                   >
                     {averageScore}%
                   </motion.p>
-                  <Progress value={averageScore} className="h-2 bg-white/20" />
+                  <Progress value={Number(averageScore)} className="h-2 bg-white/20" />
                 </div>
               </CardContent>
             </Card>
@@ -146,9 +144,7 @@ export default function Dashboard() {
               </CardHeader>
               <CardContent>
                 <p className="text-green-400 font-semibold text-lg">Operational</p>
-                <p className="text-sm text-white/70 mt-1">
-                  All systems running smoothly
-                </p>
+                <p className="text-sm text-white/70 mt-1">All systems running smoothly</p>
               </CardContent>
             </Card>
           </motion.div>
@@ -170,17 +166,15 @@ export default function Dashboard() {
                   transition={{ duration: 0.4 }}
                   className="flex flex-col gap-4"
                 >
-                  {topScores.map((item, index) => (
+                  {(topScores ?? []).map((item, index) => (
                     <div key={index}>
                       <div className="flex justify-between items-center">
                         <p className="font-semibold">
                           {index + 1}. {item.name}
                         </p>
-                        <p className="text-lg font-bold text-purple-300">
-                          {item.score}%
-                        </p>
+                        <p className="text-lg font-bold text-purple-300">{item.score}%</p>
                       </div>
-                      {index < topScores.length - 1 && (
+                      {index < (topScores?.length ?? 0) - 1 && (
                         <Separator className="bg-white/10 mt-2" />
                       )}
                     </div>
@@ -223,9 +217,7 @@ export default function Dashboard() {
                             size="sm"
                             onClick={() => {
                               setSortBy("score");
-                              setSortDir((prev) =>
-                                prev === "asc" ? "desc" : "asc"
-                              );
+                              setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
                             }}
                             className="text-white/70 hover:text-white p-1"
                           >
@@ -241,9 +233,7 @@ export default function Dashboard() {
                             size="sm"
                             onClick={() => {
                               setSortBy("date");
-                              setSortDir((prev) =>
-                                prev === "asc" ? "desc" : "asc"
-                              );
+                              setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
                             }}
                             className="text-white/70 hover:text-white p-1"
                           >
@@ -257,7 +247,7 @@ export default function Dashboard() {
                     <AnimatePresence>
                       {currentItems.map((cv, index) => (
                         <motion.tr
-                          key={index}
+                          key={`${cv.name}-${index}`}
                           initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0 }}
@@ -265,11 +255,9 @@ export default function Dashboard() {
                           className="hover:bg-white/10 transition-all border-b border-white/5"
                         >
                           <td className="py-2 px-3 font-semibold">{cv.name}</td>
-                          <td className="py-2 px-3 text-purple-300 font-bold">
-                            {cv.score}%
-                          </td>
+                          <td className="py-2 px-3 text-purple-300 font-bold">{cv.score}%</td>
                           <td className="py-2 px-3">
-                            {cv.date.toLocaleDateString()}
+                            {new Date(cv.date).toLocaleDateString()}
                           </td>
                         </motion.tr>
                       ))}
