@@ -1,5 +1,6 @@
-"use client";
+'use client';
 
+import { useState } from "react";
 import Image from "next/image";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -7,56 +8,33 @@ import { useState, useRef } from "react";
 
 export default function Home() {
   const [file, setFile] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | submitted | error
-  const [msg, setMsg] = useState("");
-  const inputRef = useRef(null);
 
-  async function handleSubmit() {
-    if (!file) return;
-
-    const name = file.name?.toLowerCase() || "";
-    const okExt = name.endsWith(".pdf") || name.endsWith(".doc") || name.endsWith(".docx");
-    if (!okExt) {
-      setStatus("error");
-      setMsg("Please upload a PDF/DOC/DOCX.");
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!file) {
+      console.error("No file selected");
       return;
     }
 
-    // Build form data
-    const fd = new FormData();
-    fd.append("file", file);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("keywords", "POS,sales,EFTPOS,brand");
 
-    // Fire-and-forget the request (don’t await)
-    const p = fetch("/api/upload", { method: "POST", body: fd })
-      .then(async (res) => {
-        const text = await res.text();               // robust against non-JSON errors
-        let data = {};
-        try { data = JSON.parse(text); } catch (_) {} // best-effort parse
-        if (!res.ok) {
-          throw new Error(data.error || `Upload failed (${res.status})`);
-        }
-        // Keep the "Submitted" status but update message with filename/score if available
-        setMsg(
-          data?.score != null
-            ? `Submitted: ${data.filename} • Score: ${data.score}`
-            : `Submitted: ${data.filename}`
-        );
-      })
-      .catch((e) => {
-        setStatus("error");
-        setMsg(e.message || "Upload failed.");
+    try {
+      const res = await fetch("http://localhost:8000/score", {
+        method: "POST",
+        body: formData,
       });
 
-    // Instantly reflect "Submitted" in the UI
-    setStatus("submitted");
-    setMsg("Submitted! Scoring in the background…");
-
-    // Clear the file input so user can upload another right away
-    setFile(null);
-    if (inputRef.current) inputRef.current.value = "";
-
-    // Optional: don’t warn about the un-awaited promise
-    void p;
+      const data = await res.json();
+      if (data.success) {
+        console.log("Score data:", data.data);
+      } else {
+        console.error("Error:", data.error);
+      }
+    } catch (err) {
+      console.error("Request failed:", err);
+    }
   }
 
   return (
@@ -78,27 +56,28 @@ export default function Home() {
 
         {/* Subtitle */}
         <p className="text-lg sm:text-xl text-white/90 leading-relaxed">
-          Upload your CV and let AI help you stand out. Get instant feedback,
-          tailored insights, and boost your hiring chances — powered by ZEIL.
+          Upload your CV and let AI help you stand out. Every application gets the spotlight it deserves. Powered by ZEIL.
         </p>
 
         {/* Upload Section */}
-        <div className="w-full mt-6 flex flex-col sm:flex-row items-center justify-center gap-4 bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/20 shadow-lg">
+        <form
+          onSubmit={handleSubmit}
+          className="w-full mt-6 flex flex-col sm:flex-row items-center justify-center gap-4 bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/20 shadow-lg"
+        >
           <Input
             ref={inputRef}
             type="file"
             className="bg-white text-black rounded-md border-0 w-full sm:w-auto"
             accept=".pdf,.doc,.docx"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
           <Button
-            onClick={handleSubmit}
-            disabled={!file} // no spinner; allow immediate click for next upload
+            type="submit"
             className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all"
           >
-            {status === "submitted" ? "Submitted" : "Submit CV"}
+            Submit CV
           </Button>
-        </div>
+        </form>
 
         {/* Status message */}
         {status !== "idle" && (

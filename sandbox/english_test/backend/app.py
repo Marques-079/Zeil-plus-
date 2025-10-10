@@ -1,14 +1,14 @@
-# app.py
 from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+from typing import Optional
 import json
 import numpy as np
 
 from scoring import webm_to_wav, load_wav, score_user_reading
 
-# ---- Paths (make everything file-relative) ----
+# ---- Paths ----
 BASE_DIR = Path(__file__).resolve().parent
 PROMPTS_PATH = BASE_DIR / "prompts.json"
 
@@ -16,13 +16,13 @@ PROMPTS_PATH = BASE_DIR / "prompts.json"
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later to ["http://localhost:5173"]
+    allow_origins=["*"],  # tighten later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load prompts.json (relative to this file)
+# Load prompts
 if not PROMPTS_PATH.exists():
     raise FileNotFoundError(f"prompts.json not found at: {PROMPTS_PATH}")
 with open(PROMPTS_PATH, "r") as f:
@@ -39,29 +39,30 @@ async def score(
     prompt_id: str = Form(...),
     started_ms: float = Form(...),
     ended_ms: float = Form(...),
-    audio: UploadFile | None = None,
+    audio: Optional[UploadFile] = None,
 ):
     if audio is None:
+        print("DEBUG: Missing audio file")
         raise HTTPException(400, "Missing audio file")
     if prompt_id not in PROMPTS:
+        print(f"DEBUG: Unknown prompt_id {prompt_id}")
         raise HTTPException(400, f"Unknown prompt_id {prompt_id}")
 
-    # Read audio blob and decode to 16 kHz mono
     try:
         raw = await audio.read()
         user_audio = webm_to_wav(raw, target_sr=16000)
     except Exception as e:
+        print(f"DEBUG: Audio decode failed: {e}")
         raise HTTPException(400, f"Audio decode failed: {e}")
 
-    # Build expected text and load reference (file-relative)
     p = PROMPTS[prompt_id]
     expected_text = " ".join(p["lines"])
     ref_path = BASE_DIR / p["reference_wav"]
     if not ref_path.exists():
+        print(f"DEBUG: Reference file missing: {ref_path}")
         raise HTTPException(500, f"Reference file missing: {ref_path}")
     ref_audio = load_wav(str(ref_path), sr=16000)
 
-    # Score
     breakdown = score_user_reading(expected_text, user_audio, ref_audio, sr=16000)
     result = {
         "prompt_id": prompt_id,
