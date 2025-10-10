@@ -1,8 +1,41 @@
+'use client';
+
+import { useState } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export default function Home() {
+  const [file, setFile] = useState(null);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!file) {
+      console.error("No file selected");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("keywords", "POS,sales,EFTPOS,brand");
+
+    try {
+      const res = await fetch("http://localhost:8000/score", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        console.log("Score data:", data.data);
+      } else {
+        console.error("Error:", data.error);
+      }
+    } catch (err) {
+      console.error("Request failed:", err);
+    }
+  }
+
   return (
     <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 bg-gradient-to-b from-[#2E005E] via-[#3A007A] to-[#5E17EB] text-white">
       <main className="flex flex-col gap-[32px] row-start-2 items-center text-center sm:items-center max-w-2xl">
@@ -22,30 +55,34 @@ export default function Home() {
 
         {/* Subtitle */}
         <p className="text-lg sm:text-xl text-white/90 leading-relaxed">
-          Upload your CV and let AI help you stand out. Get instant feedback, 
-          tailored insights, and boost your hiring chances — powered by ZEIL.
+          Upload your CV and let AI help you stand out. Every application gets the spotlight it deserves. Powered by ZEIL.
         </p>
 
         {/* Upload Section */}
-        <div className="w-full mt-6 flex flex-col sm:flex-row items-center justify-center gap-4 bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/20 shadow-lg">
+        <form
+          onSubmit={handleSubmit}
+          className="w-full mt-6 flex flex-col sm:flex-row items-center justify-center gap-4 bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/20 shadow-lg"
+        >
           <Input
             type="file"
             className="bg-white text-black rounded-md border-0 w-full sm:w-auto"
             accept=".pdf,.doc,.docx"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
-          <Button className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all">
+          <Button
+            type="submit"
+            className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all"
+          >
             Submit CV
           </Button>
-        </div>
+        </form>
 
         {/* Call to Action */}
         <div className="mt-8">
           <p className="text-sm sm:text-base text-white/80 mb-3">
             Ready to see how your CV performs?
           </p>
-          <Button
-            className="bg-white text-[#5E17EB] font-bold px-6 py-3 rounded-full hover:bg-[#EDE9FE] transition-all"
-          >
+          <Button className="bg-white text-[#5E17EB] font-bold px-6 py-3 rounded-full hover:bg-[#EDE9FE] transition-all">
             Get Started
           </Button>
         </div>
