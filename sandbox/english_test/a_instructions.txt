@@ -1,0 +1,9 @@
+python -m uvicorn \
+  --app-dir sandbox/english_test/backend app:app \
+  --reload \
+  --reload-dir sandbox/english_test/backend \
+  --reload-exclude ".venv/*" \
+  --port 8000
+
+
+npm --prefix sandbox/english_test/frontend run dev

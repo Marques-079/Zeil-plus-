@@ -1,0 +1,18 @@
+[
+  {
+    "id": "p1",
+    "lines": [
+      "The museum received a heavy crate this morning.",
+      "Please place it carefully on the loading platform."
+    ],
+    "reference_wav": "references/en_ref_1.wav"
+  },
+  {
+    "id": "p2",
+    "lines": [
+      "She quickly packed her bag before the rain started.",
+      "Then she hurried across the street to catch the bus."
+    ],
+    "reference_wav": "references/en_ref_2.wav"
+  }
+]
