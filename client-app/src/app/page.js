@@ -11,8 +11,10 @@ const API_BASE =
     process.env.NEXT_PUBLIC_API_BASE.replace(/\/$/, "")) ||
   "http://localhost:8000";
 
-// Use the CV-specific endpoint (your FastAPI should expose this for file uploads)
-const CV_SCORE_ENDPOINT = `${API_BASE}/cv/score`;
+// Optional override if you know the exact path
+const OVERRIDE_PATH =
+  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_CV_SCORE_PATH) ||
+  "";
 
 /** Turn any API error (string | object | array) into a readable string */
 function normalizeApiError(payload, fallback = "Unknown error") {
@@ -21,14 +23,13 @@ function normalizeApiError(payload, fallback = "Unknown error") {
 
     if (typeof payload === "string") return payload;
 
-    // Common FastAPI shapes
     if (typeof payload.error === "string") return payload.error;
     if (typeof payload.detail === "string") return payload.detail;
 
     if (Array.isArray(payload.detail)) {
       const parts = payload.detail.map((d) => {
         const loc = Array.isArray(d?.loc) ? d.loc.join(".") : d?.loc;
-        const basic = d?.msg || d?.message || d?.type || "error";
+      const basic = d?.msg || d?.message || d?.type || "error";
         return loc ? `${loc}: ${basic}` : String(basic);
       });
       return parts.join(" | ");
@@ -38,11 +39,7 @@ function normalizeApiError(payload, fallback = "Unknown error") {
       const parts = payload.map((d) => {
         if (typeof d === "string") return d;
         if (d && (d.msg || d.message)) return d.msg || d.message;
-        try {
-          return JSON.stringify(d);
-        } catch {
-          return String(d);
-        }
+        try { return JSON.stringify(d); } catch { return String(d); }
       });
       return parts.join(" | ");
     }
@@ -55,10 +52,91 @@ function normalizeApiError(payload, fallback = "Unknown error") {
   }
 }
 
+function looksLikeTTSValidation(msg) {
+  return typeof msg === "string" &&
+    /prompt_id|audio|started_ms|ended_ms|candidate/.test(msg);
+}
+
+/** POST to the first working CV score endpoint */
+async function postCvScore(formData) {
+  const candidates = [];
+
+  if (OVERRIDE_PATH) {
+    candidates.push(`${API_BASE}${OVERRIDE_PATH.startsWith("/") ? "" : "/"}${OVERRIDE_PATH}`);
+  }
+
+  // Most likely CV scoring routes to try:
+  candidates.push(
+    `${API_BASE}/cv/score`,
+    `${API_BASE}/score`,
+    `${API_BASE}/api/cv/score`,
+    `${API_BASE}/api/score`,
+    `${API_BASE}/v1/cv/score`,
+    `${API_BASE}/v1/score`,
+  );
+
+  // De-dup just in case
+  const tried = new Set();
+  const unique = candidates.filter(u => !tried.has(u) && tried.add(u));
+
+  let last = null;
+
+  for (const url of unique) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: formData,
+        mode: "cors",
+        headers: { Accept: "application/json" }, // let browser set multipart boundary
+      });
+
+      let data;
+      try {
+        const ct = res.headers.get("content-type") || "";
+        data = ct.includes("application/json") ? await res.json() : await res.text();
+      } catch {
+        data = { error: "Failed to parse server response" };
+      }
+
+      // If completely not found, try next
+      if (res.status === 404 || normalizeApiError(data) === "Not Found") {
+        last = { url, res, data };
+        continue;
+      }
+
+      // If it's clearly the speaking-test route (wrong API), skip to the next candidate
+      const msg = normalizeApiError(data, `HTTP ${res.status} ${res.statusText || ""}`.trim());
+      if (looksLikeTTSValidation(msg)) {
+        last = { url, res, data };
+        continue;
+      }
+
+      // Success (2xx) — or at least an endpoint that exists and accepted the payload
+      if (res.ok) {
+        return { ok: true, url, res, data };
+      }
+
+      // Non-2xx but not the TTS route: surface this as the final error for this URL
+      return { ok: false, url, res, data, msg: msg || `HTTP ${res.status}` };
+    } catch (err) {
+      last = { url, err };
+      // try next
+    }
+  }
+
+  // If we got here, nothing worked
+  if (last?.res) {
+    const msg = normalizeApiError(last.data, `HTTP ${last.res.status}`);
+    return { ok: false, url: last.url, res: last.res, data: last.data, msg };
+  }
+  return { ok: false, url: unique[unique.length - 1], msg: "Network error or server unavailable" };
+}
+
 export default function Home() {
   const [file, setFile] = useState(null);
-  const [result, setResult] = useState(null);   // success payload OR { ok:false, error, raw }
+  const [result, setResult] = useState(null);   // success payload OR { ok:false, error, raw, endpoint }
   const [submitting, setSubmitting] = useState(false);
+  const [usedEndpoint, setUsedEndpoint] = useState("");
 
   // Applicant details
   const [name, setName] = useState("");
@@ -81,10 +159,10 @@ export default function Home() {
 
     setResult(null);
     setSubmitting(true);
+    setUsedEndpoint("");
 
     if (!file) {
-      const msg = "Please upload your CV first.";
-      setResult({ ok: false, error: msg });
+      setResult({ ok: false, error: "Please upload your CV first." });
       setSubmitting(false);
       return;
     }
@@ -93,6 +171,7 @@ export default function Home() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("keywords", "POS,sales,EFTPOS,brand");
+
     // (Optional) pass applicant fields to your backend if you want
     formData.append("name", name);
     formData.append("email", email);
@@ -103,60 +182,28 @@ export default function Home() {
     formData.append("has_criminal_history", String(hasCriminalHistory));
 
     try {
-      const res = await fetch(CV_SCORE_ENDPOINT, {
-        method: "POST",
-        body: formData,
-        mode: "cors",
-        headers: { Accept: "application/json" }, // let browser set multipart boundary
-      });
+      const r = await postCvScore(formData);
+      setUsedEndpoint(r.url || "");
 
-      let data;
-      try {
-        const ct = res.headers.get("content-type") || "";
-        if (ct.includes("application/json")) {
-          data = await res.json();
-        } else {
-          const text = await res.text();
-          data = text;
-        }
-      } catch (parseErr) {
-        data = { error: "Failed to parse server response" };
-      }
-
-      if (!res.ok) {
-        const msg = normalizeApiError(
-          data,
-          `HTTP ${res.status} ${res.statusText || ""}`.trim()
-        );
-
-        // If you accidentally hit the speaking-test route, FastAPI will complain
-        // about prompt_id / audio etc. We surface a clear hint.
-        const looksLikeTTS =
-          typeof msg === "string" &&
-          /prompt_id|audio|started_ms|ended_ms|candidate/.test(msg);
-
-        const hint = looksLikeTTS
-          ? `${msg} — It looks like you called the speaking-test endpoint. Use ${CV_SCORE_ENDPOINT} for CV scoring.`
-          : msg;
-
-        console.warn("CV upload failed:", hint, data);
-        setResult({ ok: false, error: hint, raw: data });
+      if (!r.ok) {
+        const msg = r.msg || "Upload failed";
+        setResult({ ok: false, error: msg, raw: r.data || r.err || null, endpoint: r.url });
         setSubmitting(false);
         return;
       }
 
+      const data = r.data;
       const success = typeof data?.success === "boolean" ? data.success : true;
       if (!success) {
         const msg = normalizeApiError(data, "Request failed");
-        console.warn("Scoring failed:", msg, data);
-        setResult({ ok: false, error: msg, raw: data });
+        setResult({ ok: false, error: msg, raw: data, endpoint: r.url });
         setSubmitting(false);
         return;
       }
 
       // success path
       const payload = data?.data ?? data ?? {};
-      setResult(payload);
+      setResult({ ...payload, endpoint: r.url });
 
       // Create the dashboard bundle
       const submissionPayload = {
@@ -180,6 +227,7 @@ export default function Home() {
 
         // CV scoring result
         scoring: payload || null,
+        endpoint: r.url,
       };
 
       // Persist locally so your dashboard can read it
@@ -216,7 +264,6 @@ export default function Home() {
       setPackagedSubmission(submissionPayload);
     } catch (err) {
       const msg = err?.message || String(err);
-      console.warn("Request crashed:", msg);
       setResult({ ok: false, error: msg });
     } finally {
       setSubmitting(false);
@@ -364,6 +411,9 @@ export default function Home() {
         {result && (
           <div className="mt-6 p-4 bg-white/10 backdrop-blur-md rounded-xl border border-white/20 w-full text-left">
             <h2 className="text-xl font-bold mb-2">Result</h2>
+            <p className="text-xs text-white/60 mb-2">
+              Endpoint used: <code className="break-all">{usedEndpoint || "(not resolved)"}</code>
+            </p>
             <pre className="text-sm text-white/90 whitespace-pre-wrap">
               {JSON.stringify(result, null, 2)}
             </pre>
