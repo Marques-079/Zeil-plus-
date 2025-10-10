@@ -1,13 +1,145 @@
 'use client';
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
+const API_BASE =
+  (typeof process !== "undefined" &&
+    process.env?.NEXT_PUBLIC_API_BASE &&
+    process.env.NEXT_PUBLIC_API_BASE.replace(/\/$/, "")) ||
+  "http://localhost:8000";
+
+// Optional override if you know the exact path
+const OVERRIDE_PATH =
+  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_CV_SCORE_PATH) ||
+  "";
+
+/** Turn any API error (string | object | array) into a readable string */
+function normalizeApiError(payload, fallback = "Unknown error") {
+  try {
+    if (!payload) return fallback;
+
+    if (typeof payload === "string") return payload;
+
+    if (typeof payload.error === "string") return payload.error;
+    if (typeof payload.detail === "string") return payload.detail;
+
+    if (Array.isArray(payload.detail)) {
+      const parts = payload.detail.map((d) => {
+        const loc = Array.isArray(d?.loc) ? d.loc.join(".") : d?.loc;
+        const basic = d?.msg || d?.message || d?.type || "error";
+        return loc ? `${loc}: ${basic}` : String(basic);
+      });
+      return parts.join(" | ");
+    }
+
+    if (Array.isArray(payload)) {
+      const parts = payload.map((d) => {
+        if (typeof d === "string") return d;
+        if (d && (d.msg || d.message)) return d.msg || d.message;
+        try { return JSON.stringify(d); } catch { return String(d); }
+      });
+      return parts.join(" | ");
+    }
+
+    if (typeof payload.message === "string") return payload.message;
+
+    return JSON.stringify(payload);
+  } catch {
+    return fallback;
+  }
+}
+
+function looksLikeTTSValidation(msg) {
+  return typeof msg === "string" &&
+    /prompt_id|audio|started_ms|ended_ms|candidate/.test(msg);
+}
+
+/** POST to the first working CV score endpoint */
+async function postCvScore(formData) {
+  const candidates = [];
+
+  if (OVERRIDE_PATH) {
+    candidates.push(`${API_BASE}${OVERRIDE_PATH.startsWith("/") ? "" : "/"}${OVERRIDE_PATH}`);
+  }
+
+  // Most likely CV scoring routes to try:
+  candidates.push(
+    `${API_BASE}/cv/score`,
+    `${API_BASE}/score`,
+    `${API_BASE}/api/cv/score`,
+    `${API_BASE}/api/score`,
+    `${API_BASE}/v1/cv/score`,
+    `${API_BASE}/v1/score`,
+  );
+
+  // De-dup just in case
+  const tried = new Set();
+  const unique = candidates.filter(u => !tried.has(u) && tried.add(u));
+
+  let last = null;
+
+  for (const url of unique) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: formData,
+        mode: "cors",
+        headers: { Accept: "application/json" }, // let browser set multipart boundary
+      });
+
+      let data;
+      try {
+        const ct = res.headers.get("content-type") || "";
+        data = ct.includes("application/json") ? await res.json() : await res.text();
+      } catch {
+        data = { error: "Failed to parse server response" };
+      }
+
+      // If completely not found, try next
+      if (res.status === 404 || normalizeApiError(data) === "Not Found") {
+        last = { url, res, data };
+        continue;
+      }
+
+      // If it's clearly the speaking-test route (wrong API), skip to the next candidate
+      const msg = normalizeApiError(data, `HTTP ${res.status} ${res.statusText || ""}`.trim());
+      if (looksLikeTTSValidation(msg)) {
+        last = { url, res, data };
+        continue;
+      }
+
+      // Success (2xx) — or at least an endpoint that exists and accepted the payload
+      if (res.ok) {
+        return { ok: true, url, res, data };
+      }
+
+      // Non-2xx but not the TTS route: surface this as the final error for this URL
+      return { ok: false, url, res, data, msg: msg || `HTTP ${res.status}` };
+    } catch (err) {
+      last = { url, err };
+      // try next
+    }
+  }
+
+  // If we got here, nothing worked
+  if (last?.res) {
+    const msg = normalizeApiError(last.data, `HTTP ${last.res.status}`);
+    return { ok: false, url: last.url, res: last.res, data: last.data, msg };
+  }
+  return { ok: false, url: unique[unique.length - 1], msg: "Network error or server unavailable" };
+}
+
 export default function Home() {
+  const router = useRouter();
+
   const [file, setFile] = useState(null);
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(null);   // success payload OR { ok:false, error, raw, endpoint }
+  const [submitting, setSubmitting] = useState(false);
+  const [usedEndpoint, setUsedEndpoint] = useState("");
 
   // Applicant details
   const [name, setName] = useState("");
@@ -22,14 +154,19 @@ export default function Home() {
   const [isNZCitizen, setIsNZCitizen] = useState(false);
   const [hasCriminalHistory, setHasCriminalHistory] = useState(false);
 
-  // NEW: packaged submission (for dashboard ingestion later)
+  // Packaged submission (for dashboard ingestion later)
   const [packagedSubmission, setPackagedSubmission] = useState(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
+
+    setResult(null);
+    setSubmitting(true);
+    setUsedEndpoint("");
+
     if (!file) {
-      console.error("No file selected");
-      setResult({ error: "Please upload your CV first." });
+      setResult({ ok: false, error: "Please upload your CV first." });
+      setSubmitting(false);
       return;
     }
 cl
@@ -37,7 +174,7 @@ cl
     formData.append("file", file);
     formData.append("keywords", "POS,sales,EFTPOS,brand");
 
-    // Extra fields (still sent to your FastAPI if you want to handle them server-side)
+    // (Optional) pass applicant fields to your backend if you want
     formData.append("name", name);
     formData.append("email", email);
     formData.append("phone", phone);
@@ -47,43 +184,57 @@ cl
     formData.append("has_criminal_history", String(hasCriminalHistory));
 
     try {
-      // 1) Submit to scorer
-      const res = await fetch("http://localhost:8000/score", {
-        method: "POST",
-        body: formData,
-      });
+      const r = await postCvScore(formData);
+      setUsedEndpoint(r.url || "");
 
-      const data = await res.json();
+      if (!r.ok) {
+        const msg = r.msg || "Upload failed";
+        setResult({ ok: false, error: msg, raw: r.data || r.err || null, endpoint: r.url });
+        setSubmitting(false);
+        return;
+      }
 
-      if (data.success) {
-        // keep existing behavior
-        setResult(data.data);
+      const data = r.data;
+      const success = typeof data?.success === "boolean" ? data.success : true;
+      if (!success) {
+        const msg = normalizeApiError(data, "Request failed");
+        setResult({ ok: false, error: msg, raw: data, endpoint: r.url });
+        setSubmitting(false);
+        return;
+      }
 
-        // 2) ALSO: Package all form info + score for your dashboard
-        const submissionPayload = {
-          id:
-            (typeof crypto !== "undefined" &&
-              crypto.randomUUID &&
-              crypto.randomUUID()) ||
-            `sub_${Date.now()}`,
-          submittedAt: new Date().toISOString(),
-          // File metadata only (file bytes were already sent in formData above)
-          fileName: file?.name || null,
-          fileType: file?.type || null,
-          // Applicant fields
-          name,
-          email,
-          phone,
-          whyJoin,
-          messageToHM,
-          isNZCitizen,
-          hasCriminalHistory,
-          // Scoring result returned from backend
-          scoring: data.data || null,
-        };
+      // success path
+      const payload = data?.data ?? data ?? {};
+      setResult({ ...payload, endpoint: r.url });
 
-        // Save locally so your dashboard page (or any page) can read it if needed
-        try {
+      // Create the dashboard bundle
+      const submissionPayload = {
+        id:
+          (typeof crypto !== "undefined" &&
+            crypto.randomUUID &&
+            crypto.randomUUID()) ||
+          `sub_${Date.now()}`,
+        submittedAt: new Date().toISOString(),
+        fileName: file?.name || null,
+        fileType: file?.type || null,
+
+        // Applicant fields
+        name,
+        email,
+        phone,
+        whyJoin,
+        messageToHM,
+        isNZCitizen,
+        hasCriminalHistory,
+
+        // CV scoring result
+        scoring: payload || null,
+        endpoint: r.url,
+      };
+
+      // Persist locally so your dashboard can read it
+      try {
+        if (typeof window !== "undefined") {
           const existing =
             JSON.parse(localStorage.getItem("easyhire_submissions") || "[]") ||
             [];
@@ -92,37 +243,32 @@ cl
             "easyhire_submissions",
             JSON.stringify(existing)
           );
-          // also store the latest one
           localStorage.setItem(
             "easyhire_latest_submission",
             JSON.stringify(submissionPayload)
           );
-        } catch (err) {
-          console.warn("localStorage not available or failed:", err);
         }
-
-        // Optionally POST to your Next.js API route to persist for dashboard
-        // (Create /pages/api/submissions.ts or /app/api/submissions/route.ts to handle this)
-        try {
-          await fetch("/api/submissions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(submissionPayload),
-          });
-        } catch (err) {
-          // Non-blocking; still keep the packaged data locally even if API route isn't ready
-          console.warn("Failed to send submission to /api/submissions:", err);
-        }
-
-        // Keep in state so you can immediately render/inspect what will go to the dashboard
-        setPackagedSubmission(submissionPayload);
-      } else {
-        console.error("Error:", data.error);
-        setResult({ error: data.error });
+      } catch (lsErr) {
+        console.warn("localStorage not available or failed:", lsErr);
       }
+
+      // Optionally persist to your Next.js API for server-side storage
+      try {
+        await fetch("/api/submissions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(submissionPayload),
+        });
+      } catch (err) {
+        console.warn("Failed to send submission to /api/submissions:", err);
+      }
+
+      setPackagedSubmission(submissionPayload);
     } catch (err) {
-      console.error("Request failed:", err);
-      setResult({ error: (err && err.message) ? err.message : String(err) });
+      const msg = err?.message || String(err);
+      setResult({ ok: false, error: msg });
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -251,13 +397,25 @@ cl
             </label>
           </div>
 
-          {/* Submit button at bottom */}
-          <div className="mt-4 flex justify-center">
+          {/* Submit + English Test buttons */}
+          <div className="mt-4 flex justify-center gap-4">
+            {/* Submit Button */}
             <Button
               type="submit"
-              className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all"
+              disabled={submitting}
+              className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Submit
+              {submitting ? "Submitting…" : "Submit"}
+            </Button>
+
+            {/* Take English Test (always available) */}
+            <Button
+              type="button"
+              onClick={() => router.push("/tts")} // change route if your page differs
+              className="bg-[#10B981] hover:bg-[#059669] text-white font-semibold px-6 py-2 rounded-md transition-all shadow-md"
+              title="Go to the English speaking test"
+            >
+              Take English Test
             </Button>
           </div>
         </form>
@@ -266,10 +424,13 @@ cl
         {result && (
           <div className="mt-6 p-4 bg-white/10 backdrop-blur-md rounded-xl border border-white/20 w-full text-left">
             <h2 className="text-xl font-bold mb-2">Result</h2>
+            <p className="text-xs text-white/60 mb-2">
+              Endpoint used: <code className="break-all">{usedEndpoint || "(not resolved)"}</code>
+            </p>
             <pre className="text-sm text-white/90 whitespace-pre-wrap">
               {JSON.stringify(result, null, 2)}
             </pre>
-            {result.error && (
+            {result.error && typeof result.error === "string" && (
               <p className="text-red-400 mt-2">Error: {result.error}</p>
             )}
           </div>
