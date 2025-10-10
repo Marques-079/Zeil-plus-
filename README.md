@@ -12,8 +12,7 @@
 
 
 **Our Slide Deck:**
-[Click Here]([[url](https://www.canva.com/design/DAG1WSHUjGE/8tZAk9p00XlVeN2JjhrZTA/view?utm_content=DAG1WSHUjGE&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h90401cf751)]
-
+[Click Here]([https://www.canva.com/design/DAG1WSHUjGE/8tZAk9p00XlVeN2JjhrZTA/view?utm_content=DAG1WSHUjGE&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h90401cf751)
 
 ACCESS TO PAGES:
 
