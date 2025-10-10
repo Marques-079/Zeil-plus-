@@ -26,6 +26,32 @@ Built with:
 
 ## 🚀 Features
 
+### 🧠 CV Intelligence Scoring  
+Each uploaded **PDF résumé** is parsed and compared against a **large language model (LLM)** that evaluates structure, relevance, and clarity.  
+The system then analyzes **semantic similarity** between the candidate’s CV and a target **job description**, detecting keyword density, contextual alignment, and industry-specific phrasing.
+
+### ⚖️ Weighted Scoring Engine  
+Outputs a **weighted average score** that balances **semantic matching** (meaning-based alignment) and **keyword precision** (relevant term presence).  
+This ensures fair, data-driven ranking across diverse candidate profiles.
+
+### 🗣️ English Speaking Test  
+After CV evaluation, users record themselves reading a short **prompt sentence**.  
+The system compares the recording to a **model reference**, analyzing:
+- **Pacing**
+- **Pronunciation accuracy**
+- **Spoken word fidelity**  
+
+using advanced **audio signal processing** and **speech recognition models**.
+
+### 📊 Comprehensive Candidate Profile  
+Results are aggregated into an **AI-generated evaluation**, summarizing both:
+- **Written communication strength** (via CV)
+- **Spoken proficiency** (via English test)  
+
+providing a holistic, automated view of candidate suitability.
+
+---
+
 ✅ Upload and analyze CVs in seconds  
 ✅ Animated dashboard showing:
 - Total CVs uploaded  
