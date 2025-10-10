@@ -1,13 +1,13 @@
 # 💼 EasyHire — AI CV Checker
 
-**Built By:
-**
-**Joshua Li: Full Stack Developer
+**Built By:**
 
-Marcus Chan: Full Stack Developer**
+**Joshua Li: Full Stack Developer **
 
-**Our Video Submission:
-**
+**Marcus Chan: Full Stack Developer**
+
+**Our Video Submission: **
+
 [Video Submission](https://www.youtube.com/watch?v=ZPsLlhV16Cw)
 
 
