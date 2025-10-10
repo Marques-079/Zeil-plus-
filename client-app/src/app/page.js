@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { useState, useRef } from "react";
 
 export default function Home() {
   const [file, setFile] = useState(null);
@@ -64,6 +65,7 @@ export default function Home() {
           className="w-full mt-6 flex flex-col sm:flex-row items-center justify-center gap-4 bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/20 shadow-lg"
         >
           <Input
+            ref={inputRef}
             type="file"
             className="bg-white text-black rounded-md border-0 w-full sm:w-auto"
             accept=".pdf,.doc,.docx"
@@ -76,6 +78,21 @@ export default function Home() {
             Submit CV
           </Button>
         </form>
+
+        {/* Status message */}
+        {status !== "idle" && (
+          <p
+            className={
+              status === "submitted"
+                ? "text-green-300"
+                : status === "error"
+                ? "text-red-300"
+                : "text-white/80"
+            }
+          >
+            {msg}
+          </p>
+        )}
 
         {/* Call to Action */}
         <div className="mt-8">
