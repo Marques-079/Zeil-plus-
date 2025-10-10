@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowUpDown } from "lucide-react";
+import { ArrowUpDown, ChevronRight, ChevronDown } from "lucide-react";
 
 const fetcher = (url) => fetch(url).then((r) => r.json());
 
@@ -22,7 +22,7 @@ export default function Dashboard() {
   const averageScore = data?.averageScore ?? 0;
   const topScores = data?.top5 ?? [];
 
-  // Fallback list (empty until data arrives)
+  // Normalized items come from /api/scores; ensure Date object for sorting by date
   const items =
     (data?.items ?? []).map((i) => ({
       ...i,
@@ -34,6 +34,7 @@ export default function Dashboard() {
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState(null); // "score" | "date" | null
   const [sortDir, setSortDir] = useState("desc"); // "asc" | "desc"
+  const [expanded, setExpanded] = useState(() => new Set()); // track expanded row ids
 
   const itemsPerPage = 25;
 
@@ -71,6 +72,15 @@ export default function Dashboard() {
     hidden: { opacity: 0, y: 30 },
     visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
   };
+
+  function toggleExpand(id) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   return (
     <motion.div
@@ -208,6 +218,7 @@ export default function Dashboard() {
                 <table className="w-full text-left text-white/90 text-sm sm:text-base">
                   <thead className="border-b border-white/20 text-white/70">
                     <tr>
+                      <th className="py-2 px-3 w-10"></th>{/* expand cell */}
                       <th className="py-2 px-3">Name</th>
                       <th className="py-2 px-3">
                         <div className="flex items-center gap-2">
@@ -245,22 +256,94 @@ export default function Dashboard() {
                   </thead>
                   <tbody>
                     <AnimatePresence>
-                      {currentItems.map((cv, index) => (
-                        <motion.tr
-                          key={`${cv.name}-${index}`}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.2 }}
-                          className="hover:bg-white/10 transition-all border-b border-white/5"
-                        >
-                          <td className="py-2 px-3 font-semibold">{cv.name}</td>
-                          <td className="py-2 px-3 text-purple-300 font-bold">{cv.score}%</td>
-                          <td className="py-2 px-3">
-                            {new Date(cv.date).toLocaleDateString()}
-                          </td>
-                        </motion.tr>
-                      ))}
+                      {currentItems.map((cv, index) => {
+                        const key = cv.id || `${cv.name}-${index}`;
+                        const isOpen = expanded.has(key);
+                        return (
+                          <Fragment key={key}>
+                            <motion.tr
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="hover:bg-white/10 transition-all border-b border-white/5"
+                            >
+                              <td className="py-2 px-3">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpand(key)}
+                                  aria-label={isOpen ? "Collapse" : "Expand"}
+                                  className="p-1 rounded hover:bg-white/10"
+                                >
+                                  {isOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                                </button>
+                              </td>
+                              <td className="py-2 px-3 font-semibold">{cv.name}</td>
+                              <td className="py-2 px-3 text-purple-300 font-bold">{cv.score}%</td>
+                              <td className="py-2 px-3">
+                                {new Date(cv.date).toLocaleDateString()}
+                              </td>
+                            </motion.tr>
+
+                            {/* Expanded details row */}
+                            <motion.tr
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: isOpen ? 1 : 0, height: isOpen ? "auto" : 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="border-b border-white/10"
+                              style={{ display: isOpen ? "table-row" : "none" }}
+                            >
+                              <td colSpan={4} className="py-3 px-3 bg-white/5">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  <div>
+                                    <div className="text-white/70 text-xs">Email</div>
+                                    <div className="font-medium">{cv.email || "—"}</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-white/70 text-xs">Phone</div>
+                                    <div className="font-medium">{cv.phone || "—"}</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-white/70 text-xs">NZ Citizen</div>
+                                    <div className="font-medium">{cv.isNZCitizen ? "Yes" : "No"}</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-white/70 text-xs">Criminal History</div>
+                                    <div className="font-medium">{cv.hasCriminalHistory ? "Yes" : "No"}</div>
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <div className="text-white/70 text-xs">Why do you want to join?</div>
+                                    <div className="font-mono text-xs whitespace-pre-wrap">
+                                      {cv.whyJoin || "—"}
+                                    </div>
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <div className="text-white/70 text-xs">Message to the hiring manager</div>
+                                    <div className="font-mono text-xs whitespace-pre-wrap">
+                                      {cv.messageToHM || "—"}
+                                    </div>
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <div className="text-white/70 text-xs">File</div>
+                                    <div className="font-medium">
+                                      {cv.fileName || "—"}{" "}
+                                      <span className="text-white/60">{cv.fileType || ""}</span>
+                                    </div>
+                                  </div>
+                                  {cv.scoring && (
+                                    <div className="md:col-span-2">
+                                      <div className="text-white/70 text-xs">Scoring (raw)</div>
+                                      <pre className="text-[11px] bg-black/30 p-3 rounded-lg overflow-auto">
+                                        {JSON.stringify(cv.scoring, null, 2)}
+                                      </pre>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </motion.tr>
+                          </Fragment>
+                        );
+                      })}
                     </AnimatePresence>
                   </tbody>
                 </table>
@@ -295,3 +378,6 @@ export default function Dashboard() {
     </motion.div>
   );
 }
+
+// Needed since we use <Fragment> inside map:
+import { Fragment } from "react";
