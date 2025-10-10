@@ -2,7 +2,7 @@
 
 **Built By:**
 
-**Joshua Li: Full Stack Developer **
+**Joshua Li: Full Stack Developer**
 
 **Marcus Chan: Full Stack Developer**
 
