@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
@@ -29,7 +30,7 @@ function normalizeApiError(payload, fallback = "Unknown error") {
     if (Array.isArray(payload.detail)) {
       const parts = payload.detail.map((d) => {
         const loc = Array.isArray(d?.loc) ? d.loc.join(".") : d?.loc;
-      const basic = d?.msg || d?.message || d?.type || "error";
+        const basic = d?.msg || d?.message || d?.type || "error";
         return loc ? `${loc}: ${basic}` : String(basic);
       });
       return parts.join(" | ");
@@ -133,6 +134,8 @@ async function postCvScore(formData) {
 }
 
 export default function Home() {
+  const router = useRouter();
+
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);   // success payload OR { ok:false, error, raw, endpoint }
   const [submitting, setSubmitting] = useState(false);
@@ -395,14 +398,25 @@ export default function Home() {
             </label>
           </div>
 
-          {/* Submit button at bottom */}
-          <div className="mt-4 flex justify-center">
+          {/* Submit + English Test buttons */}
+          <div className="mt-4 flex justify-center gap-4">
+            {/* Submit Button */}
             <Button
               type="submit"
               disabled={submitting}
               className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {submitting ? "Submitting…" : "Submit"}
+            </Button>
+
+            {/* Take English Test (always available) */}
+            <Button
+              type="button"
+              onClick={() => router.push("/tts")} // change route if your page differs
+              className="bg-[#10B981] hover:bg-[#059669] text-white font-semibold px-6 py-2 rounded-md transition-all shadow-md"
+              title="Go to the English speaking test"
+            >
+              Take English Test
             </Button>
           </div>
         </form>
