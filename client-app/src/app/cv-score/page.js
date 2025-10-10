@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import useSWR from "swr";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,29 +12,134 @@ import { ArrowUpDown, ChevronRight, ChevronDown } from "lucide-react";
 
 const fetcher = (url) => fetch(url).then((r) => r.json());
 
+function ScoringDisplay({ scoring }) {
+  if (!scoring) return null;
+
+  // String or primitive: just show it plainly
+  if (typeof scoring !== "object") {
+    return (
+      <div className="text-white/90 text-sm break-words">{String(scoring)}</div>
+    );
+  }
+
+  const meta = scoring.meta || {};
+  const matched = Array.isArray(meta.matched_keywords)
+    ? meta.matched_keywords
+    : [];
+
+  return (
+    <div className="space-y-3 text-sm text-white/90">
+      <div className="grid sm:grid-cols-2 gap-2">
+        <div>
+          <span className="text-white/70">File:</span>{" "}
+          <span className="font-medium">{scoring.file ?? "—"}</span>
+        </div>
+        <div>
+          <span className="text-white/70">Score:</span>{" "}
+          <span className="font-semibold">{scoring.score ?? "—"}</span>
+        </div>
+        <div className="sm:col-span-2">
+          <span className="text-white/70">Path:</span>{" "}
+          <span className="break-all">{scoring.path ?? "—"}</span>
+        </div>
+        <div>
+          <span className="text-white/70">Timestamp:</span>{" "}
+          <span>
+            {scoring.ts ? new Date(scoring.ts).toLocaleString() : "—"}
+          </span>
+        </div>
+      </div>
+
+      {Object.keys(meta).length > 0 && (
+        <div className="space-y-2">
+          <div className="text-white/70 text-xs">Meta</div>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {"final_score" in meta && (
+              <div>
+                <span className="text-white/70">Final score:</span>{" "}
+                <span className="font-medium">{meta.final_score}</span>
+              </div>
+            )}
+            {"keyword_coverage_pct" in meta && (
+              <div>
+                <span className="text-white/70">Keyword coverage:</span>{" "}
+                <span className="font-medium">
+                  {meta.keyword_coverage_pct}%
+                </span>
+              </div>
+            )}
+            {"semantic_similarity_pct" in meta && (
+              <div>
+                <span className="text-white/70">Semantic similarity:</span>{" "}
+                <span className="font-medium">
+                  {meta.semantic_similarity_pct}%
+                </span>
+              </div>
+            )}
+            {"evidence_rerank_pct" in meta && (
+              <div>
+                <span className="text-white/70">Evidence re-rank:</span>{" "}
+                <span className="font-medium">{meta.evidence_rerank_pct}</span>
+              </div>
+            )}
+          </div>
+
+          {matched.length > 0 && (
+            <div>
+              <div className="text-white/70">Matched keywords</div>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {matched.map((kw, i) => (
+                  <span
+                    key={i}
+                    className="px-2 py-0.5 rounded-full bg-white/15 text-white/90 text-xs"
+                  >
+                    {kw}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
-  // LIVE DATA
+  // Fetch once on mount; no auto refresh/revalidation afterwards
   const { data, error, isLoading } = useSWR("/api/scores", fetcher, {
-    refreshInterval: 3000,
-  }); // poll every 3s
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    revalidateIfStale: false,
+  });
 
   const totalCVs = data?.totalCVs ?? 0;
   const averageScore = data?.averageScore ?? 0;
   const topScores = data?.top5 ?? [];
 
-  // Normalized items come from /api/scores; ensure Date object for sorting by date
-  const items =
-    (data?.items ?? []).map((i) => ({
-      ...i,
-      date: new Date(i.date),
-    })) ?? [];
+  // Normalize + stable key per row so rows don't "auto-close" on any local state change
+  const items = useMemo(
+    () =>
+      (data?.items ?? []).map((i) => {
+        const d = new Date(i.date);
+        const stableKey =
+          i.id ??
+          i.fileName ??
+          i.email ??
+          `${i.name ?? "unknown"}-${isFinite(+d) ? +d : i.date ?? "nodate"}`;
+        return { ...i, date: d, _stableKey: stableKey };
+      }),
+    [data]
+  );
 
   // Search, sorting, pagination
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState(null); // "score" | "date" | null
   const [sortDir, setSortDir] = useState("desc"); // "asc" | "desc"
-  const [expanded, setExpanded] = useState(() => new Set()); // track expanded row ids
+  // Track ALL expanded rows in a Set; never auto-collapse on other interactions
+  const [expanded, setExpanded] = useState(() => new Set());
 
   const itemsPerPage = 25;
 
@@ -218,7 +323,7 @@ export default function Dashboard() {
                 <table className="w-full text-left text-white/90 text-sm sm:text-base">
                   <thead className="border-b border-white/20 text-white/70">
                     <tr>
-                      <th className="py-2 px-3 w-10"></th>{/* expand cell */}
+                      <th className="py-2 px-3 w-10"></th>
                       <th className="py-2 px-3">Name</th>
                       <th className="py-2 px-3">
                         <div className="flex items-center gap-2">
@@ -255,9 +360,9 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    <AnimatePresence>
-                      {currentItems.map((cv, index) => {
-                        const key = cv.id || `${cv.name}-${index}`;
+                    <AnimatePresence initial={false}>
+                      {currentItems.map((cv) => {
+                        const key = cv._stableKey;
                         const isOpen = expanded.has(key);
                         return (
                           <Fragment key={key}>
@@ -281,66 +386,72 @@ export default function Dashboard() {
                               <td className="py-2 px-3 font-semibold">{cv.name}</td>
                               <td className="py-2 px-3 text-purple-300 font-bold">{cv.score}%</td>
                               <td className="py-2 px-3">
-                                {new Date(cv.date).toLocaleDateString()}
+                                {isFinite(+new Date(cv.date))
+                                  ? new Date(cv.date).toLocaleDateString()
+                                  : "—"}
                               </td>
                             </motion.tr>
 
-                            {/* Expanded details row */}
-                            <motion.tr
-                              initial={{ opacity: 0, height: 0 }}
-                              animate={{ opacity: isOpen ? 1 : 0, height: isOpen ? "auto" : 0 }}
-                              transition={{ duration: 0.2 }}
-                              className="border-b border-white/10"
-                              style={{ display: isOpen ? "table-row" : "none" }}
-                            >
+                            {/* Expanded details row (no autoclose; stable key) */}
+                            <tr className={`${isOpen ? "" : "hidden"} border-b border-white/10`}>
                               <td colSpan={4} className="py-3 px-3 bg-white/5">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                   <div>
                                     <div className="text-white/70 text-xs">Email</div>
-                                    <div className="font-medium">{cv.email || "—"}</div>
+                                    <div className="font-medium text-white/90 text-sm">
+                                      {cv.email || "—"}
+                                    </div>
                                   </div>
                                   <div>
                                     <div className="text-white/70 text-xs">Phone</div>
-                                    <div className="font-medium">{cv.phone || "—"}</div>
+                                    <div className="font-medium text-white/90 text-sm">
+                                      {cv.phone || "—"}
+                                    </div>
                                   </div>
                                   <div>
                                     <div className="text-white/70 text-xs">NZ Citizen</div>
-                                    <div className="font-medium">{cv.isNZCitizen ? "Yes" : "No"}</div>
+                                    <div className="font-medium text-white/90 text-sm">
+                                      {cv.isNZCitizen ? "Yes" : "No"}
+                                    </div>
                                   </div>
                                   <div>
                                     <div className="text-white/70 text-xs">Criminal History</div>
-                                    <div className="font-medium">{cv.hasCriminalHistory ? "Yes" : "No"}</div>
+                                    <div className="font-medium text-white/90 text-sm">
+                                      {cv.hasCriminalHistory ? "Yes" : "No"}
+                                    </div>
                                   </div>
                                   <div className="md:col-span-2">
-                                    <div className="text-white/70 text-xs">Why do you want to join?</div>
-                                    <div className="font-mono text-xs whitespace-pre-wrap">
+                                    <div className="text-white/70 text-xs">
+                                      Why do you want to join?
+                                    </div>
+                                    <div className="text-white/90 text-sm whitespace-pre-wrap break-words">
                                       {cv.whyJoin || "—"}
                                     </div>
                                   </div>
                                   <div className="md:col-span-2">
-                                    <div className="text-white/70 text-xs">Message to the hiring manager</div>
-                                    <div className="font-mono text-xs whitespace-pre-wrap">
+                                    <div className="text-white/70 text-xs">
+                                      Message to the hiring manager
+                                    </div>
+                                    <div className="text-white/90 text-sm whitespace-pre-wrap break-words">
                                       {cv.messageToHM || "—"}
                                     </div>
                                   </div>
                                   <div className="md:col-span-2">
                                     <div className="text-white/70 text-xs">File</div>
-                                    <div className="font-medium">
+                                    <div className="font-medium text-white/90 text-sm">
                                       {cv.fileName || "—"}{" "}
                                       <span className="text-white/60">{cv.fileType || ""}</span>
                                     </div>
                                   </div>
                                   {cv.scoring && (
                                     <div className="md:col-span-2">
-                                      <div className="text-white/70 text-xs">Scoring (raw)</div>
-                                      <pre className="text-[11px] bg-black/30 p-3 rounded-lg overflow-auto">
-                                        {JSON.stringify(cv.scoring, null, 2)}
-                                      </pre>
+                                      <div className="text-white/70 text-xs">Scoring</div>
+                                      <ScoringDisplay scoring={cv.scoring} />
                                     </div>
                                   )}
                                 </div>
                               </td>
-                            </motion.tr>
+                            </tr>
                           </Fragment>
                         );
                       })}
@@ -378,6 +489,3 @@ export default function Dashboard() {
     </motion.div>
   );
 }
-
-// Needed since we use <Fragment> inside map:
-import { Fragment } from "react";
