@@ -38,10 +38,7 @@ function ScoringDisplay({ scoring }) {
           <span className="text-white/70">Score:</span>{" "}
           <span className="font-semibold">{scoring.score ?? "—"}</span>
         </div>
-        <div className="sm:col-span-2">
-          <span className="text-white/70">Path:</span>{" "}
-          <span className="break-all">{scoring.path ?? "—"}</span>
-        </div>
+        {/* Removed the "Path:" line as requested */}
         <div>
           <span className="text-white/70">Timestamp:</span>{" "}
           <span>
@@ -123,12 +120,34 @@ export default function Dashboard() {
     () =>
       (data?.items ?? []).map((i) => {
         const d = new Date(i.date);
+
+        // Prefer the real submitted name from the form, with sensible fallbacks
+        let displayName =
+          (i.form && i.form.name) ||
+          i.formName ||
+          ([i.firstName, i.lastName].filter(Boolean).join(" ") || null) ||
+          i.applicantName ||
+          i.fullName ||
+          i.name ||
+          (i.email ? i.email.split("@")[0] : null) ||
+          (i.fileName ? i.fileName.replace(/\.\w+$/, "") : null) ||
+          "Unknown";
+        displayName = (displayName || "").trim();
+
         const stableKey =
           i.id ??
           i.fileName ??
           i.email ??
-          `${i.name ?? "unknown"}-${isFinite(+d) ? +d : i.date ?? "nodate"}`;
-        return { ...i, date: d, _stableKey: stableKey };
+          `${displayName || "unknown"}-${
+            isFinite(+d) ? +d : i.date ?? "nodate"
+          }`;
+
+        return {
+          ...i,
+          date: d,
+          _stableKey: stableKey,
+          displayName,
+        };
       }),
     [data]
   );
@@ -145,7 +164,9 @@ export default function Dashboard() {
 
   const filteredCVs = useMemo(() => {
     let result = items.filter((cv) =>
-      (cv.name || "").toLowerCase().includes(search.toLowerCase())
+      (cv.displayName || cv.name || "")
+        .toLowerCase()
+        .includes(search.toLowerCase())
     );
 
     if (sortBy) {
@@ -161,7 +182,11 @@ export default function Dashboard() {
         return 0;
       });
     } else {
-      result.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      result.sort((a, b) =>
+        (a.displayName || a.name || "").localeCompare(
+          b.displayName || b.name || ""
+        )
+      );
     }
 
     return result;
@@ -383,7 +408,9 @@ export default function Dashboard() {
                                   {isOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                                 </button>
                               </td>
-                              <td className="py-2 px-3 font-semibold">{cv.name}</td>
+                              <td className="py-2 px-3 font-semibold">
+                                {cv.displayName || cv.name}
+                              </td>
                               <td className="py-2 px-3 text-purple-300 font-bold">{cv.score}%</td>
                               <td className="py-2 px-3">
                                 {isFinite(+new Date(cv.date))

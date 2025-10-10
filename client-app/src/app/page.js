@@ -1,13 +1,70 @@
 'use client';
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import Image from "next/image";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
+const API_BASE =
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.NEXT_PUBLIC_API_BASE &&
+    process.env.NEXT_PUBLIC_API_BASE.replace(/\/$/, "")) ||
+  "http://localhost:8000";
+
+/** Turn any API error (string | object | array) into a readable string */
+function normalizeApiError(payload, fallback = "Unknown error") {
+  try {
+    if (!payload) return fallback;
+
+    // If server literally returned a string (plain text)
+    if (typeof payload === "string") return payload;
+
+    // Common FastAPI shapes
+    // 1) { error: "..." }
+    if (typeof payload.error === "string") return payload.error;
+
+    // 2) { detail: "..." }
+    if (typeof payload.detail === "string") return payload.detail;
+
+    // 3) { detail: [ { type, loc, msg, input }, ... ] }
+    if (Array.isArray(payload.detail)) {
+      const parts = payload.detail.map((d) => {
+        const loc = Array.isArray(d?.loc) ? d.loc.join(".") : d?.loc;
+        const basic = d?.msg || d?.message || d?.type || "error";
+        return loc ? `${loc}: ${basic}` : String(basic);
+      });
+      return parts.join(" | ");
+    }
+
+    // 4) Sometimes API returns a top-level array of errors
+    if (Array.isArray(payload)) {
+      const parts = payload.map((d) => {
+        if (typeof d === "string") return d;
+        if (d && (d.msg || d.message)) return d.msg || d.message;
+        try {
+          return JSON.stringify(d);
+        } catch {
+          return String(d);
+        }
+      });
+      return parts.join(" | ");
+    }
+
+    // 5) { message: "..." }
+    if (typeof payload.message === "string") return payload.message;
+
+    // 6) Give up nicely
+    return JSON.stringify(payload);
+  } catch {
+    return fallback;
+  }
+}
+
 export default function Home() {
   const [file, setFile] = useState(null);
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(null); // success payload OR { ok:false, error, raw }
+  const [submitting, setSubmitting] = useState(false);
 
   // Applicant details
   const [name, setName] = useState("");
@@ -22,22 +79,25 @@ export default function Home() {
   const [isNZCitizen, setIsNZCitizen] = useState(false);
   const [hasCriminalHistory, setHasCriminalHistory] = useState(false);
 
-  // NEW: packaged submission (for dashboard ingestion later)
+  // Packaged submission (for dashboard ingestion later)
   const [packagedSubmission, setPackagedSubmission] = useState(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
+
+    setResult(null);
+    setSubmitting(true);
+
     if (!file) {
-      console.error("No file selected");
-      setResult({ error: "Please upload your CV first." });
+      const msg = "Please upload your CV first.";
+      setResult({ ok: false, error: msg });
+      setSubmitting(false);
       return;
     }
 
     const formData = new FormData();
     formData.append("file", file);
     formData.append("keywords", "POS,sales,EFTPOS,brand");
-
-    // Extra fields (still sent to your FastAPI if you want to handle them server-side)
     formData.append("name", name);
     formData.append("email", email);
     formData.append("phone", phone);
@@ -47,43 +107,75 @@ export default function Home() {
     formData.append("has_criminal_history", String(hasCriminalHistory));
 
     try {
-      // 1) Submit to scorer
-      const res = await fetch("http://localhost:8000/score", {
+      const res = await fetch(`${API_BASE}/score`, {
         method: "POST",
         body: formData,
+        mode: "cors",
+        // DO NOT set Content-Type for FormData – browser sets boundary
+        headers: { Accept: "application/json" },
       });
 
-      const data = await res.json();
+      let data;
+      try {
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          data = text; // plain text error or response
+        }
+      } catch (parseErr) {
+        data = { error: "Failed to parse server response" };
+      }
 
-      if (data.success) {
-        // keep existing behavior
-        setResult(data.data);
+      if (!res.ok) {
+        const msg = normalizeApiError(
+          data,
+          `HTTP ${res.status} ${res.statusText || ""}`.trim()
+        );
+        // warn instead of error to avoid Next overlay screaming at you
+        console.warn("Upload failed:", msg, data);
+        setResult({ ok: false, error: msg, raw: data });
+        setSubmitting(false);
+        return;
+      }
 
-        // 2) ALSO: Package all form info + score for your dashboard
-        const submissionPayload = {
-          id:
-            (typeof crypto !== "undefined" &&
-              crypto.randomUUID &&
-              crypto.randomUUID()) ||
-            `sub_${Date.now()}`,
-          submittedAt: new Date().toISOString(),
-          // File metadata only (file bytes were already sent in formData above)
-          fileName: file?.name || null,
-          fileType: file?.type || null,
-          // Applicant fields
-          name,
-          email,
-          phone,
-          whyJoin,
-          messageToHM,
-          isNZCitizen,
-          hasCriminalHistory,
-          // Scoring result returned from backend
-          scoring: data.data || null,
-        };
+      // If backend doesn’t send `success`, assume success when 2xx
+      const success = typeof data?.success === "boolean" ? data.success : true;
+      if (!success) {
+        const msg = normalizeApiError(data, "Request failed");
+        console.warn("Scoring failed:", msg, data);
+        setResult({ ok: false, error: msg, raw: data });
+        setSubmitting(false);
+        return;
+      }
 
-        // Save locally so your dashboard page (or any page) can read it if needed
-        try {
+      const payload = data?.data ?? data ?? {};
+      setResult(payload);
+
+      // Build dashboard submission bundle
+      const submissionPayload = {
+        id:
+          (typeof crypto !== "undefined" &&
+            crypto.randomUUID &&
+            crypto.randomUUID()) ||
+          `sub_${Date.now()}`,
+        submittedAt: new Date().toISOString(),
+        fileName: file?.name || null,
+        fileType: file?.type || null,
+        name,
+        email,
+        phone,
+        whyJoin,
+        messageToHM,
+        isNZCitizen,
+        hasCriminalHistory,
+        scoring: payload || null,
+      };
+
+      // Persist locally for the dashboard page to pick up
+      try {
+        if (typeof window !== "undefined") {
           const existing =
             JSON.parse(localStorage.getItem("easyhire_submissions") || "[]") ||
             [];
@@ -92,37 +184,33 @@ export default function Home() {
             "easyhire_submissions",
             JSON.stringify(existing)
           );
-          // also store the latest one
           localStorage.setItem(
             "easyhire_latest_submission",
             JSON.stringify(submissionPayload)
           );
-        } catch (err) {
-          console.warn("localStorage not available or failed:", err);
         }
-
-        // Optionally POST to your Next.js API route to persist for dashboard
-        // (Create /pages/api/submissions.ts or /app/api/submissions/route.ts to handle this)
-        try {
-          await fetch("/api/submissions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(submissionPayload),
-          });
-        } catch (err) {
-          // Non-blocking; still keep the packaged data locally even if API route isn't ready
-          console.warn("Failed to send submission to /api/submissions:", err);
-        }
-
-        // Keep in state so you can immediately render/inspect what will go to the dashboard
-        setPackagedSubmission(submissionPayload);
-      } else {
-        console.error("Error:", data.error);
-        setResult({ error: data.error });
+      } catch (lsErr) {
+        console.warn("localStorage not available or failed:", lsErr);
       }
+
+      // Optionally send to your Next API route to persist to a DB for the dashboard
+      try {
+        await fetch("/api/submissions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(submissionPayload),
+        });
+      } catch (err) {
+        console.warn("Failed to send submission to /api/submissions:", err);
+      }
+
+      setPackagedSubmission(submissionPayload);
     } catch (err) {
-      console.error("Request failed:", err);
-      setResult({ error: (err && err.message) ? err.message : String(err) });
+      const msg = err?.message || String(err);
+      console.warn("Request crashed:", msg);
+      setResult({ ok: false, error: msg });
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -255,9 +343,10 @@ export default function Home() {
           <div className="mt-4 flex justify-center">
             <Button
               type="submit"
-              className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all"
+              disabled={submitting}
+              className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Submit
+              {submitting ? "Submitting…" : "Submit"}
             </Button>
           </div>
         </form>
@@ -269,7 +358,8 @@ export default function Home() {
             <pre className="text-sm text-white/90 whitespace-pre-wrap">
               {JSON.stringify(result, null, 2)}
             </pre>
-            {result.error && (
+            {/* Only render a string here to avoid React object crash */}
+            {result.error && typeof result.error === "string" && (
               <p className="text-red-400 mt-2">Error: {result.error}</p>
             )}
           </div>
