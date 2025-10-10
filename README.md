@@ -1,10 +1,16 @@
 # 💼 EasyHire — AI CV Checker
 
-Built By:
+**Built By:
+**
+**Joshua Li: Full Stack Developer
 
-Joshua Li: Full Stack Developer
+Marcus Chan: Full Stack Developer**
 
-Marcus Chan: Full Stack Developer
+**Our Video Submission:
+**
+[Video Submission](https://www.youtube.com/watch?v=ZPsLlhV16Cw)
+
+
 
 A modern, elegant web app built for the **ZEIL Hackathon**.  
 EasyHire lets recruiters **upload and analyze CVs** instantly, scoring them and displaying results in a smooth, animated dashboard.
