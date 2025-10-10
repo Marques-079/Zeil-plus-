@@ -1,13 +1,13 @@
 'use client';
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Image from "next/image";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { useState, useRef } from "react";
 
 export default function Home() {
   const [file, setFile] = useState(null);
+  const [result, setResult] = useState(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -29,18 +29,21 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         console.log("Score data:", data.data);
+        setResult(data.data);
       } else {
         console.error("Error:", data.error);
+        setResult({ error: data.error });
       }
     } catch (err) {
       console.error("Request failed:", err);
+      setResult({ error: err.message });
     }
   }
 
   return (
     <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 bg-gradient-to-b from-[#2E005E] via-[#3A007A] to-[#5E17EB] text-white">
       <main className="flex flex-col gap-[32px] row-start-2 items-center text-center sm:items-center max-w-2xl">
-        {/* Logo or Hero Icon */}
+        {/* Logo */}
         <Image
           src="/zeil-logo.png"
           alt="Zeil logo"
@@ -65,7 +68,6 @@ export default function Home() {
           className="w-full mt-6 flex flex-col sm:flex-row items-center justify-center gap-4 bg-white/10 backdrop-blur-md p-6 rounded-2xl border border-white/20 shadow-lg"
         >
           <Input
-            ref={inputRef}
             type="file"
             className="bg-white text-black rounded-md border-0 w-full sm:w-auto"
             accept=".pdf,.doc,.docx"
@@ -79,19 +81,13 @@ export default function Home() {
           </Button>
         </form>
 
-        {/* Status message */}
-        {status !== "idle" && (
-          <p
-            className={
-              status === "submitted"
-                ? "text-green-300"
-                : status === "error"
-                ? "text-red-300"
-                : "text-white/80"
-            }
-          >
-            {msg}
-          </p>
+        {/* Result Display */}
+        {result && (
+          <div className="mt-6 p-4 bg-white/10 backdrop-blur-md rounded-xl border border-white/20 w-full">
+            <h2 className="text-xl font-bold mb-2">Result</h2>
+            <pre className="text-sm text-white/90 whitespace-pre-wrap">{JSON.stringify(result, null, 2)}</pre>
+            {result.error && <p className="text-red-400 mt-2">Error: {result.error}</p>}
+          </div>
         )}
 
         {/* Call to Action */}
