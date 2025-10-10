@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -10,15 +10,19 @@ import { Input } from "@/components/ui/input";
 import { ArrowUpDown } from "lucide-react";
 
 export default function Dashboard() {
-  const totalCVs = 124;
+  const totalCVs = 124;          // keep your other placeholders if you want
   const averageScore = 78;
-  const topScores = [
-    { name: "Alice Nguyen", score: 95 },
-    { name: "James Li", score: 92 },
-    { name: "Sofia Patel", score: 90 },
-    { name: "Ethan Roberts", score: 89 },
-    { name: "Maya Thompson", score: 88 },
-  ];
+
+  // NEW: topScores comes from API
+  const [topScores, setTopScores] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      const res = await fetch("/api/scores", { cache: "no-store" });
+      const data = await res.json();
+      setTopScores(data.topScores ?? []);
+    })();
+  }, []);
 
   // Placeholder dataset of uploaded CVs
   const allCVs = Array.from({ length: 98 }, (_, i) => ({

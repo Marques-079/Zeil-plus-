@@ -3,12 +3,11 @@
 import Image from "next/image";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-
 import { useState, useRef } from "react";
 
 export default function Home() {
   const [file, setFile] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | uploading | success | error
+  const [status, setStatus] = useState("idle"); // idle | submitted | error
   const [msg, setMsg] = useState("");
   const inputRef = useRef(null);
 
@@ -23,30 +22,41 @@ export default function Home() {
       return;
     }
 
-    try {
-      setStatus("uploading");
-      setMsg("");
+    // Build form data
+    const fd = new FormData();
+    fd.append("file", file);
 
-      const fd = new FormData();
-      fd.append("file", file);
-
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: fd,
+    // Fire-and-forget the request (don’t await)
+    const p = fetch("/api/upload", { method: "POST", body: fd })
+      .then(async (res) => {
+        const text = await res.text();               // robust against non-JSON errors
+        let data = {};
+        try { data = JSON.parse(text); } catch (_) {} // best-effort parse
+        if (!res.ok) {
+          throw new Error(data.error || `Upload failed (${res.status})`);
+        }
+        // Keep the "Submitted" status but update message with filename/score if available
+        setMsg(
+          data?.score != null
+            ? `Submitted: ${data.filename} • Score: ${data.score}`
+            : `Submitted: ${data.filename}`
+        );
+      })
+      .catch((e) => {
+        setStatus("error");
+        setMsg(e.message || "Upload failed.");
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Upload failed.");
+    // Instantly reflect "Submitted" in the UI
+    setStatus("submitted");
+    setMsg("Submitted! Scoring in the background…");
 
-      setStatus("success");
-      setMsg(`Saved as ${data.filename}`);
+    // Clear the file input so user can upload another right away
+    setFile(null);
+    if (inputRef.current) inputRef.current.value = "";
 
-      setFile(null);
-      if (inputRef.current) inputRef.current.value = ""; // clear file input
-    } catch (e) {
-      setStatus("error");
-      setMsg(e.message || "Upload failed.");
-    }
+    // Optional: don’t warn about the un-awaited promise
+    void p;
   }
 
   return (
@@ -83,10 +93,10 @@ export default function Home() {
           />
           <Button
             onClick={handleSubmit}
-            disabled={!file || status === "uploading"}
+            disabled={!file} // no spinner; allow immediate click for next upload
             className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold px-6 py-2 rounded-md transition-all"
           >
-            {status === "uploading" ? "Uploading…" : "Submit CV"}
+            {status === "submitted" ? "Submitted" : "Submit CV"}
           </Button>
         </div>
 
@@ -94,7 +104,7 @@ export default function Home() {
         {status !== "idle" && (
           <p
             className={
-              status === "success"
+              status === "submitted"
                 ? "text-green-300"
                 : status === "error"
                 ? "text-red-300"
