@@ -32,7 +32,7 @@ export default function Home() {
       setResult({ error: "Please upload your CV first." });
       return;
     }
-
+cl
     const formData = new FormData();
     formData.append("file", file);
     formData.append("keywords", "POS,sales,EFTPOS,brand");
