@@ -7,27 +7,24 @@ import { Input } from "../components/ui/input";
 
 const API_BASE =
   (typeof process !== "undefined" &&
-    process.env &&
-    process.env.NEXT_PUBLIC_API_BASE &&
+    process.env?.NEXT_PUBLIC_API_BASE &&
     process.env.NEXT_PUBLIC_API_BASE.replace(/\/$/, "")) ||
   "http://localhost:8000";
+
+// Use the CV-specific endpoint (your FastAPI should expose this for file uploads)
+const CV_SCORE_ENDPOINT = `${API_BASE}/cv/score`;
 
 /** Turn any API error (string | object | array) into a readable string */
 function normalizeApiError(payload, fallback = "Unknown error") {
   try {
     if (!payload) return fallback;
 
-    // If server literally returned a string (plain text)
     if (typeof payload === "string") return payload;
 
     // Common FastAPI shapes
-    // 1) { error: "..." }
     if (typeof payload.error === "string") return payload.error;
-
-    // 2) { detail: "..." }
     if (typeof payload.detail === "string") return payload.detail;
 
-    // 3) { detail: [ { type, loc, msg, input }, ... ] }
     if (Array.isArray(payload.detail)) {
       const parts = payload.detail.map((d) => {
         const loc = Array.isArray(d?.loc) ? d.loc.join(".") : d?.loc;
@@ -37,7 +34,6 @@ function normalizeApiError(payload, fallback = "Unknown error") {
       return parts.join(" | ");
     }
 
-    // 4) Sometimes API returns a top-level array of errors
     if (Array.isArray(payload)) {
       const parts = payload.map((d) => {
         if (typeof d === "string") return d;
@@ -51,10 +47,8 @@ function normalizeApiError(payload, fallback = "Unknown error") {
       return parts.join(" | ");
     }
 
-    // 5) { message: "..." }
     if (typeof payload.message === "string") return payload.message;
 
-    // 6) Give up nicely
     return JSON.stringify(payload);
   } catch {
     return fallback;
@@ -63,7 +57,7 @@ function normalizeApiError(payload, fallback = "Unknown error") {
 
 export default function Home() {
   const [file, setFile] = useState(null);
-  const [result, setResult] = useState(null); // success payload OR { ok:false, error, raw }
+  const [result, setResult] = useState(null);   // success payload OR { ok:false, error, raw }
   const [submitting, setSubmitting] = useState(false);
 
   // Applicant details
@@ -95,9 +89,11 @@ export default function Home() {
       return;
     }
 
+    // Build multipart form for CV scoring
     const formData = new FormData();
     formData.append("file", file);
     formData.append("keywords", "POS,sales,EFTPOS,brand");
+    // (Optional) pass applicant fields to your backend if you want
     formData.append("name", name);
     formData.append("email", email);
     formData.append("phone", phone);
@@ -107,12 +103,11 @@ export default function Home() {
     formData.append("has_criminal_history", String(hasCriminalHistory));
 
     try {
-      const res = await fetch(`${API_BASE}/score`, {
+      const res = await fetch(CV_SCORE_ENDPOINT, {
         method: "POST",
         body: formData,
         mode: "cors",
-        // DO NOT set Content-Type for FormData – browser sets boundary
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json" }, // let browser set multipart boundary
       });
 
       let data;
@@ -122,7 +117,7 @@ export default function Home() {
           data = await res.json();
         } else {
           const text = await res.text();
-          data = text; // plain text error or response
+          data = text;
         }
       } catch (parseErr) {
         data = { error: "Failed to parse server response" };
@@ -133,14 +128,23 @@ export default function Home() {
           data,
           `HTTP ${res.status} ${res.statusText || ""}`.trim()
         );
-        // warn instead of error to avoid Next overlay screaming at you
-        console.warn("Upload failed:", msg, data);
-        setResult({ ok: false, error: msg, raw: data });
+
+        // If you accidentally hit the speaking-test route, FastAPI will complain
+        // about prompt_id / audio etc. We surface a clear hint.
+        const looksLikeTTS =
+          typeof msg === "string" &&
+          /prompt_id|audio|started_ms|ended_ms|candidate/.test(msg);
+
+        const hint = looksLikeTTS
+          ? `${msg} — It looks like you called the speaking-test endpoint. Use ${CV_SCORE_ENDPOINT} for CV scoring.`
+          : msg;
+
+        console.warn("CV upload failed:", hint, data);
+        setResult({ ok: false, error: hint, raw: data });
         setSubmitting(false);
         return;
       }
 
-      // If backend doesn’t send `success`, assume success when 2xx
       const success = typeof data?.success === "boolean" ? data.success : true;
       if (!success) {
         const msg = normalizeApiError(data, "Request failed");
@@ -150,10 +154,11 @@ export default function Home() {
         return;
       }
 
+      // success path
       const payload = data?.data ?? data ?? {};
       setResult(payload);
 
-      // Build dashboard submission bundle
+      // Create the dashboard bundle
       const submissionPayload = {
         id:
           (typeof crypto !== "undefined" &&
@@ -163,6 +168,8 @@ export default function Home() {
         submittedAt: new Date().toISOString(),
         fileName: file?.name || null,
         fileType: file?.type || null,
+
+        // Applicant fields
         name,
         email,
         phone,
@@ -170,10 +177,12 @@ export default function Home() {
         messageToHM,
         isNZCitizen,
         hasCriminalHistory,
+
+        // CV scoring result
         scoring: payload || null,
       };
 
-      // Persist locally for the dashboard page to pick up
+      // Persist locally so your dashboard can read it
       try {
         if (typeof window !== "undefined") {
           const existing =
@@ -193,7 +202,7 @@ export default function Home() {
         console.warn("localStorage not available or failed:", lsErr);
       }
 
-      // Optionally send to your Next API route to persist to a DB for the dashboard
+      // Optionally persist to your Next.js API for server-side storage
       try {
         await fetch("/api/submissions", {
           method: "POST",
@@ -358,7 +367,6 @@ export default function Home() {
             <pre className="text-sm text-white/90 whitespace-pre-wrap">
               {JSON.stringify(result, null, 2)}
             </pre>
-            {/* Only render a string here to avoid React object crash */}
             {result.error && typeof result.error === "string" && (
               <p className="text-red-400 mt-2">Error: {result.error}</p>
             )}
