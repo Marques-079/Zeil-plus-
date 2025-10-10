@@ -6,9 +6,18 @@
 
 **Marcus Chan: Full Stack Developer**
 
-**Our Video Submission: **
+**Our Video Submission:**
 
 [Video Submission](https://www.youtube.com/watch?v=ZPsLlhV16Cw)
+
+ACCESS TO PAGES:
+
+Audio Language Test: http://localhost:3000/tts
+
+Dashboard Page: http://localhost:3000/cv-score
+
+Main Page: http://localhost:3000/
+
 
 
 
